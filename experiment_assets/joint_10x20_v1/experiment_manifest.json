@@ -1,0 +1,14 @@
+{
+  "experiment_name": "joint_10x20_clean_v1",
+  "data_protocol": "fixed_full_cartesian_product",
+  "image_count": 10,
+  "message_count": 20,
+  "message_length": 64,
+  "pair_count": 200,
+  "crop_policy": "fixed_center_crop_256",
+  "channel": "clean_identity_float",
+  "base_checkpoint_sha256": "949cdf568cb5ab250ddfa4c07611f3e1e96146a2798eb269c87ed3da09998f66",
+  "image_split_sha256": "ac9eb2c64fa11e6de9ef86f6db2da42cbe805c0f5b780159e17714bffbbe3aaa",
+  "message_bank_sha256": "3c84d1c99ef1075e9344ba35fe67f4819a96f8a845fd2fc237a713438c397f0f",
+  "config_identifier": "configs/joint_10x20_clean_v1.json"
+}

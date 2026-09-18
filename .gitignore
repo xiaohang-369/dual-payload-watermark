@@ -1,0 +1,33 @@
+# Python environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Local datasets
+data/
+datasets/
+
+# Training / experiment outputs
+runs/
+checkpoints/
+outputs/
+logs/
+analysis_results/
+
+# Model weights
+*.pt
+*.pth
+*.ckpt
+
+# Logs
+*.log
+
+# Codex temporary files
+.codex_docx_review/
+
+# macOS
+.DS_Store
