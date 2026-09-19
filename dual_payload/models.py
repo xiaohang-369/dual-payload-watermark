@@ -97,6 +97,12 @@ class ColorDecoder(nn.Module):
 
     def forward(self, x: Tensor) -> dict[str, Tensor]:
         z, zc = x - self.dct.project(x, "w"), self.dct.project(x, "c")
+        return self.forward_from_components(z, zc)
+
+    def forward_from_components(self, z: Tensor, zc: Tensor) -> dict[str, Tensor]:
+        """Decode supplied inputs; used to compare standard and oracle luma paths."""
+        if z.shape != zc.shape or z.ndim != 4 or z.shape[1] != 1:
+            raise ValueError("z and zc must both have shape B x 1 x H x W")
         features = self.body(self.stem(torch.cat((z, zc), dim=1)))
         cb, cr = self.chroma_head(features).split(1, dim=1)
         raw = self.luma_head(features)
