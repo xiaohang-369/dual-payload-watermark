@@ -44,7 +44,7 @@ def ssim(prediction: Tensor, target: Tensor) -> Tensor:
 @torch.no_grad()
 def compute_metrics(output: dict, message: Tensor) -> dict[str, Tensor]:
     if output["attack_info"]["type"] != "identity" or not bool((output["valid_mask"] == 1).all()):
-        raise NotImplementedError("V1 metrics support clean full-valid images only")
+        raise NotImplementedError("Current metrics support clean full-valid images only")
     errors = (output["logits"] >= 0) != message.bool()
     rgb, target, x = output["rgb_hat"], output["target_rgb"], output["x_float"]
     ber = errors.float().mean()

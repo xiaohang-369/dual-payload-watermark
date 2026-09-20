@@ -5,11 +5,10 @@ from PIL import Image
 import pytest
 import torch
 
-from dual_payload.config import load_config
+from dual_payload.config import architecture_version, load_config
 from dual_payload.data import ImageFolderDataset, ensure_disjoint, fixed_message, load_rgb_image
 from dual_payload.metrics import (compute_metrics, psnr, psnr_per_sample, ssim,
                                   ssim_per_sample)
-from dual_payload.system import DualPayloadSystem
 
 
 def test_folder_rgb_range_and_deterministic_validation(tmp_path):
@@ -43,10 +42,14 @@ def test_metrics_identity_and_bit_accounting():
     assert psnr_per_sample(image, image).tolist() == [120, 120]
     torch.testing.assert_close(ssim(image, image), torch.tensor(1.))
     torch.testing.assert_close(ssim_per_sample(image, image), torch.ones(2))
-    model = DualPayloadSystem({'channels': 8, 'blocks': 1})
     message = torch.zeros(2, 64)
-    output = model(image, message)
-    output['logits'] = torch.full((2, 64), -1.)
+    y = image.mean(dim=1, keepdim=True)
+    output = {
+        'attack_info': {'type': 'identity'}, 'valid_mask': torch.ones_like(y),
+        'logits': torch.full((2, 64), -1.), 'rgb_hat': image,
+        'target_rgb': image, 'x_float': y, 'x_quantized': y, 'y': y,
+        'delta_c': torch.zeros_like(y), 'delta_w': torch.zeros_like(y),
+    }
     output['logits'][0, 0] = 0  # zero must decode to 1
     metrics = compute_metrics(output, message)
     assert float(metrics['ber']) == 1 / 128
@@ -57,9 +60,18 @@ def test_metrics_identity_and_bit_accounting():
 @pytest.mark.parametrize('override', [
     {'model': {'mystery': 1}}, {'data': {'image_size': 15}},
     {'channel': {'clamp_enabled': 'false'}}, {'loss': {'rgb': -1}},
+    {'model': {'architecture_version': 'v2', 'channels': 64}},
+    {'model': {'architecture_version': 'v2'}, 'data': {'image_size': 32}},
 ])
 def test_invalid_config_fails(tmp_path, override):
     path = tmp_path / 'config.json'
     path.write_text(json.dumps(override), encoding='utf-8')
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_missing_architecture_version_is_classified_as_v1(tmp_path):
+    path = tmp_path / 'legacy.json'
+    path.write_text(json.dumps({'model': {'channels': 64, 'blocks': 8}}), encoding='utf-8')
+    assert architecture_version(load_config(path)) == 'v1'
+    assert architecture_version(load_config()) == 'v2'

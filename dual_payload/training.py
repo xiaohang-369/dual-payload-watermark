@@ -17,7 +17,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from .config import load_config, validate_config
+from .config import architecture_version, load_config, validate_config
 from .data import (FixedCartesianDataset, ImageFolderDataset, SyntheticDataset,
                    ensure_disjoint, load_rgb_image)
 from .losses import CleanLoss
@@ -28,10 +28,13 @@ from .transforms import rgb_to_ycbcr
 
 def resolve_device(name: str) -> torch.device:
     if name == "auto":
-        name = "cuda" if torch.cuda.is_available() else "cpu"
+        name = ("cuda" if torch.cuda.is_available() else
+                "mps" if torch.backends.mps.is_available() else "cpu")
     device = torch.device(name)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA is unavailable. Install a CUDA PyTorch build or use --device cpu")
+    if device.type == "mps" and not torch.backends.mps.is_available():
+        raise ValueError("MPS is unavailable. Use --device cpu")
     if device.type == "cpu":
         torch.set_num_threads(min(4, os.cpu_count() or 1))
     return device
@@ -96,7 +99,18 @@ def load_checkpoint(path: str | Path) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict) or checkpoint.get("format_version") != 1:
         raise ValueError("Unsupported checkpoint format")
+    _require_v2_checkpoint(checkpoint, "config")
     return checkpoint
+
+
+def _require_v2_checkpoint(checkpoint: dict, config_key: str) -> None:
+    config = checkpoint.get(config_key)
+    version = architecture_version(config)
+    recorded = checkpoint.get("architecture_version", version)
+    if recorded != version:
+        raise ValueError("Checkpoint architecture_version disagrees with its saved config")
+    if version != "v2":
+        raise ValueError("Network V2 refuses V1 checkpoints; train V2 from scratch")
 
 
 def load_diagnostic_checkpoint(path: str | Path) -> dict:
@@ -109,6 +123,7 @@ def load_diagnostic_checkpoint(path: str | Path) -> dict:
     for key in ("model", "source_config", "diagnostic_steps", "fit_messages"):
         if key not in checkpoint:
             raise ValueError(f"Diagnostic checkpoint is missing {key}")
+    _require_v2_checkpoint(checkpoint, "source_config")
     return checkpoint
 
 
@@ -320,9 +335,8 @@ def _load_full_system_manifest(path: str | Path, checkpoint: dict) -> tuple[dict
     if not isinstance(config, dict) or config != checkpoint["source_config"]:
         raise ValueError("Manifest source_config does not match the diagnostic checkpoint")
     image_size = manifest.get("image_size")
-    if (isinstance(image_size, bool) or not isinstance(image_size, int)
-            or image_size < 8 or image_size % 8):
-        raise ValueError("Manifest image_size must be a positive multiple of 8")
+    if image_size != 256:
+        raise ValueError("Network V2 full-system manifest requires image_size=256")
     raw_images = manifest.get("images")
     if not isinstance(raw_images, list) or not raw_images or not all(isinstance(x, str) for x in raw_images):
         raise ValueError("Manifest images must be a non-empty ordered path list")
@@ -388,11 +402,11 @@ def _check_resume_config(config: dict, saved: dict) -> None:
 
 
 def train_main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description="Train the four-network clean baseline (no attacks)")
+    parser = argparse.ArgumentParser(description="Train the four-network Network V2 system (no attacks)")
     parser.add_argument("--config")
     parser.add_argument("--train-dir")
     parser.add_argument("--val-dir")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"))
+    parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"))
     parser.add_argument("--output-dir")
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--epochs", type=int)
@@ -406,6 +420,7 @@ def train_main(argv=None) -> None:
     restore.add_argument("--init-from", help="Load model weights into a NEW run, e.g. float -> ste8")
     args = parser.parse_args(argv)
     checkpoint = load_checkpoint(args.resume) if args.resume else None
+    initial_checkpoint = load_checkpoint(args.init_from) if args.init_from else None
     saved_accumulation_steps = (checkpoint.get("gradient_accumulation_steps", 1)
                                 if checkpoint else 1)
     if (checkpoint and args.gradient_accumulation_steps is not None
@@ -424,8 +439,9 @@ def train_main(argv=None) -> None:
     if args.smoke and (args.train_dir or args.val_dir):
         parser.error("--smoke cannot be combined with real data directories")
     if args.smoke and not checkpoint:
-        config["data"].update(image_size=32, batch_size=2, num_workers=0, train_dir=None, val_dir=None)
-        config["train"].update(epochs=1, max_steps=3, log_every=1)
+        config["data"].update(image_size=256, batch_size=1, num_workers=0,
+                              train_dir=None, val_dir=None)
+        config["train"].update(epochs=1, max_steps=1, log_every=1)
     for arg, section, key in (
         (args.train_dir, "data", "train_dir"), (args.val_dir, "data", "val_dir"),
         (args.image_size, "data", "image_size"), (args.batch_size, "data", "batch_size"),
@@ -437,6 +453,10 @@ def train_main(argv=None) -> None:
     if args.device:
         config["device"] = args.device
     validate_config(config)
+    if architecture_version(config) != "v2":
+        raise ValueError("Network V2 training requires model.architecture_version=v2")
+    if synthetic and config["data"]["batch_size"] != 1:
+        parser.error("Network V2 smoke requires batch size 1")
     if accumulation_steps > config["data"]["batch_size"]:
         parser.error("--gradient-accumulation-steps cannot exceed the logical batch size")
     if config["channel"]["quantization_mode"] == "real8":
@@ -453,8 +473,8 @@ def train_main(argv=None) -> None:
         train_data, manifest = _load_joint_experiment(config, args.config)
         val_data = train_data
     elif synthetic:
-        train_data = SyntheticDataset(8, data["image_size"], config["seed"])
-        val_data = SyntheticDataset(4, data["image_size"], config["seed"] + 10000)
+        train_data = SyntheticDataset(1, data["image_size"], config["seed"])
+        val_data = SyntheticDataset(1, data["image_size"], config["seed"] + 10000)
     else:
         train_data = ImageFolderDataset(data["train_dir"], data["image_size"], True, config["seed"])
         val_data = ImageFolderDataset(data["val_dir"], data["image_size"], False, config["seed"] + 10000)
@@ -471,14 +491,10 @@ def train_main(argv=None) -> None:
     criterion = CleanLoss(config["loss"])
     global_step, start_epoch, start_batch, best_loss = 0, 0, 0, None
     best_message_ber, best_exact_success = None, None
-    if args.init_from:
-        initial = load_checkpoint(args.init_from)
-        # Budgets affect fixed operations rather than weights: require explicit matching
-        # backbone only, allowing experiments with different delta/channel/loss settings.
-        for key in ("channels", "blocks"):
-            if config["model"][key] != initial["config"]["model"][key]:
-                raise ValueError(f"--init-from backbone mismatch: {key}")
-        model.load_state_dict(initial["model"], strict=True)
+    if initial_checkpoint:
+        if architecture_version(config) != architecture_version(initial_checkpoint["config"]):
+            raise ValueError("--init-from architecture_version mismatch")
+        model.load_state_dict(initial_checkpoint["model"], strict=True)
     if checkpoint:
         model.load_state_dict(checkpoint["model"], strict=True)
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -588,7 +604,8 @@ def train_main(argv=None) -> None:
             improved = best_loss is None or metrics["loss_total"] < best_loss
             if improved:
                 best_loss = metrics["loss_total"]
-        state = {"format_version": 1, "config": deepcopy(config), "synthetic": synthetic,
+        state = {"format_version": 1, "architecture_version": "v2",
+                 "config": deepcopy(config), "synthetic": synthetic,
                  "manifest": manifest, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                  "global_step": global_step, "next_epoch": next_epoch, "next_batch": next_batch,
                  "best_loss": best_loss, "best_message_ber": best_message_ber,
@@ -616,7 +633,7 @@ def evaluate_main(argv=None) -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--data-dir")
     parser.add_argument("--manifest", help="Exact watermark-overfit image/message bank for full-system evaluation")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
     parser.add_argument("--quantization-mode", choices=("none", "real8"))
     parser.add_argument("--batch-size", type=int, help="Full-system pair batch size; default: manifest eval batch size")
     parser.add_argument("--output", help="Optional new JSON output file")
@@ -678,7 +695,7 @@ def evaluate_main(argv=None) -> None:
     device = resolve_device(args.device)
     model = DualPayloadSystem(config["model"], config["channel"]).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
-    dataset = (SyntheticDataset(4, config["data"]["image_size"], config["seed"] + 10000)
+    dataset = (SyntheticDataset(1, config["data"]["image_size"], config["seed"] + 10000)
                if args.smoke else ImageFolderDataset(args.data_dir, config["data"]["image_size"],
                                                      False, config["seed"] + 10000))
     metrics, _ = validate(model, dataset, config, device)

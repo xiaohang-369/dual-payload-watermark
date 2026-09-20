@@ -2,7 +2,7 @@
   "seed": 2026,
   "device": "auto",
   "model": {
-    "channels": 64, "blocks": 8,
+    "architecture_version": "v2",
     "delta_c": 0.00784313725490196,
     "delta_w": 0.00784313725490196,
     "eps": 1e-8

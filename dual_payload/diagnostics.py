@@ -308,7 +308,8 @@ def overfit(model, rgbs, fit_messages, heldout_messages, config, steps, batch_si
                           "grad_l2_before_clip": float(norm)})
             evaluate(step)
     # Deliberately not format_version=1: train.py must not resume this diagnostic as a baseline run.
-    torch.save({"diagnostic_format_version": 1, "kind": "watermark_only_bce_overfit",
+    torch.save({"diagnostic_format_version": 1, "architecture_version": "v2",
+                "kind": "watermark_only_bce_overfit",
                 "model": model.state_dict(), "source_config": deepcopy(config),
                 "diagnostic_steps": steps, "fit_messages": fit_messages,
                 "heldout_messages": heldout_messages,
@@ -387,7 +388,7 @@ def random_message_fit(model, rgb, validation_messages, config, steps, batch_siz
                 })
             evaluate(step)
     # Deliberately incompatible with the formal train.py checkpoint loader.
-    torch.save({"diagnostic_format_version": 1,
+    torch.save({"diagnostic_format_version": 1, "architecture_version": "v2",
                 "kind": "watermark_only_bce_random_messages",
                 "model": model.state_dict(), "source_config": deepcopy(config),
                 "diagnostic_steps": steps, "training_seed": training_seed,
@@ -403,7 +404,7 @@ def diagnostic_main(argv=None):
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--mode", choices=("inspect", "overfit", "random_messages"), default="inspect")
     parser.add_argument("--data-dir", required=True, help="Use training images, not the validation/test split")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
     parser.add_argument("--images", type=int, default=4)
     parser.add_argument("--messages", type=int,
                         help="Inspect/overfit only: distinct fixed messages per image; default 4")

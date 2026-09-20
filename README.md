@@ -1,5 +1,7 @@
 # 双载荷灰度系统：Clean V1
 
+> `feature/network-v2-clean` 当前实现以 `docs/network2/network2_architecture.md` 为唯一 Network V2 架构规格；本文其余 V1 结构说明保留为基线背景，不能覆盖该规格。
+
 按当前确定的四网络方案实现：把颜色信息和 64-bit 消息写入单通道灰度载体，再恢复颜色并提取消息。
 
 当前阶段是 **float + identity clean**。攻击层已有固定位置和接口，仅实现恒等操作；尚未实现 JPEG、噪声、模糊或几何攻击。不使用 FFT、Transformer、额外 attention 或原图旁路通道。
@@ -39,7 +41,7 @@ uv pip install --python .venv\Scripts\python.exe --torch-backend auto -e ".[test
 
 第一条检查颜色转换、DCT 投影、RMS Cap、梯度、原设计的 clean 隔离关系、量化、消息指标、数据读取和断点续训。测试使用小主干以控制运行时间。
 
-第二条保留正式的 **64 通道、8 个残差块**，仅把输入缩为 32×32、batch size 设为 2，用明确标识的合成数据训练 3 步。它会记录 CPU/CUDA、参数数目、损失和验证指标，检查训练、保存与加载的基本链路。不能把这个结果当成自然图像上的性能结论。
+Network V2 的 smoke 固定使用 256×256、batch size 1 和一个训练 step；不能为了加速 smoke 缩小 Dw 输入或改变其 `Linear(1024,256)`。它会记录设备、参数数目、损失和验证指标，检查一次 forward/loss/backward/optimizer step 以及保存加载链路，不能把结果当成自然图像上的性能结论。
 
 每次 smoke 使用新的 `runs/smoke_...` 目录。若手动指定非空输出目录，程序会拒绝覆盖。
 

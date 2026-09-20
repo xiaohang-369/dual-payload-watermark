@@ -13,9 +13,9 @@ from dual_payload.training import (evaluate_full_system_bank, evaluate_main, loa
 
 def test_resume_matches_uninterrupted_cpu_training(tmp_path):
     config = tmp_path / 'tiny.json'
-    config.write_text(json.dumps({'model': {'channels': 4, 'blocks': 1}}), encoding='utf-8')
+    config.write_text(json.dumps({'model': {'architecture_version': 'v2'}}), encoding='utf-8')
     interrupted, uninterrupted = tmp_path / 'interrupted', tmp_path / 'uninterrupted'
-    base = ['--config', str(config), '--smoke', '--device', 'cpu']
+    base = ['--config', str(config), '--smoke', '--device', 'cpu', '--epochs', '3']
     train_main(base + ['--output-dir', str(interrupted), '--max-steps', '2'])
     train_main(['--resume', str(interrupted / 'last.pt'), '--max-steps', '3', '--device', 'cpu'])
     train_main(base + ['--output-dir', str(uninterrupted), '--max-steps', '3'])
@@ -30,7 +30,8 @@ def test_resume_matches_uninterrupted_cpu_training(tmp_path):
     with pytest.raises(ValueError, match='not empty'):
         train_main(base + ['--output-dir', str(interrupted)])
     with pytest.raises(ValueError, match='cannot change'):
-        train_main(['--resume', str(interrupted / 'last.pt'), '--max-steps', '4', '--image-size', '16'])
+        train_main(['--resume', str(interrupted / 'last.pt'), '--max-steps', '4',
+                    '--train-dir', str(tmp_path / 'changed')])
     evaluate_main(['--checkpoint', str(interrupted / 'last.pt'), '--smoke', '--device', 'cpu',
                    '--quantization-mode', 'real8', '--output', str(tmp_path / 'evaluation.json')])
     report = json.loads((tmp_path / 'evaluation.json').read_text(encoding='utf-8'))
@@ -44,17 +45,24 @@ def test_no_silent_synthetic_training():
     assert error.value.code == 2
 
 
+def test_v1_checkpoint_is_rejected_before_model_construction(tmp_path):
+    path = tmp_path / 'v1.pt'
+    torch.save({'format_version': 1,
+                'config': {'model': {'channels': 64, 'blocks': 8}},
+                'model': {}}, path)
+    with pytest.raises(ValueError, match='refuses V1'):
+        load_checkpoint(path)
+
+
 def test_full_system_bank_is_no_grad_and_preserves_every_parameter():
     config = deepcopy(DEFAULT_CONFIG)
-    config['model'].update(channels=4, blocks=1)
     model = DualPayloadSystem(config['model'], config['channel'])
     before = {key: value.clone() for key, value in model.state_dict().items()}
-    messages = torch.randint(0, 2, (3, 64)).float()
+    messages = torch.randint(0, 2, (2, 64)).float()
     result = evaluate_full_system_bank(
-        model, [torch.rand(3, 16, 16), torch.rand(3, 16, 16)], messages,
-        torch.device('cpu'), batch_size=2)
-    assert result['pairs'] == 6
-    assert result['watermark']['bits'] == 6 * 64
+        model, [torch.rand(3, 256, 256)], messages, torch.device('cpu'), batch_size=1)
+    assert result['pairs'] == 2
+    assert result['watermark']['bits'] == 2 * 64
     assert set(result['color_only']['psnr']) == {'mean', 'min', 'max'}
     assert set(result['full']['ssim']) == {'mean', 'min', 'max'}
     for key, value in model.state_dict().items():
@@ -64,25 +72,25 @@ def test_full_system_bank_is_no_grad_and_preserves_every_parameter():
 
 def test_full_system_manifest_cli_uses_saved_images_and_messages(tmp_path, capsys):
     config = deepcopy(DEFAULT_CONFIG)
-    config['model'].update(channels=4, blocks=1)
-    config['data'].update(image_size=16, batch_size=2, num_workers=0)
+    config['data'].update(image_size=256, batch_size=1, num_workers=0)
     model = DualPayloadSystem(config['model'], config['channel'])
     messages = torch.randint(0, 2, (2, 64)).float()
     image_paths = []
     for index, color in enumerate(((40, 80, 120), (120, 80, 40))):
         path = tmp_path / f'image_{index}.png'
-        Image.new('RGB', (24, 16), color).save(path)
+        Image.new('RGB', (272, 256), color).save(path)
         image_paths.append(str(path.resolve()))
     checkpoint_path = tmp_path / 'diagnostic_weights.pt'
-    torch.save({'diagnostic_format_version': 1, 'kind': 'watermark_only_bce_overfit',
+    torch.save({'diagnostic_format_version': 1, 'architecture_version': 'v2',
+                'kind': 'watermark_only_bce_overfit',
                 'model': model.state_dict(), 'source_config': config,
                 'diagnostic_steps': 7, 'fit_messages': messages,
                 'pair_exposure_counts': torch.ones(4, dtype=torch.long)}, checkpoint_path)
     checkpoint_bytes = checkpoint_path.read_bytes()
-    manifest = {'mode': 'overfit', 'source_config': config, 'image_size': 16,
+    manifest = {'mode': 'overfit', 'source_config': config, 'image_size': 256,
                 'crop': 'fixed_center', 'images': image_paths,
                 'fit_messages': messages.int().tolist(), 'fit_message_count': 2,
-                'cli': {'steps': 7}, 'eval_batch_size': 2}
+                'cli': {'steps': 7}, 'eval_batch_size': 1}
     manifest_path = tmp_path / 'manifest.json'
     manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
     output = tmp_path / 'full_system_report.json'

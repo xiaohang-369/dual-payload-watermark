@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dual-payload-grayscale"
 version = "0.1.0"
-description = "Four-network clean baseline for color and 64-bit watermark payloads"
+description = "Four-network system for color and 64-bit watermark payloads"
 requires-python = ">=3.11"
 dependencies = ["torch>=2.6", "numpy>=1.26", "Pillow>=10"]
 

@@ -1,4 +1,4 @@
-"""Separate storage precision and attacks. Only identity attacks ship in V1."""
+"""Separate storage precision and attacks. The current protocol uses identity attacks."""
 
 from dataclasses import dataclass
 

@@ -9,7 +9,8 @@ from pathlib import Path
 DEFAULT_CONFIG = {
     "seed": 2026,
     "device": "auto",
-    "model": {"channels": 64, "blocks": 8, "delta_c": 2 / 255, "delta_w": 2 / 255, "eps": 1e-8},
+    "model": {"architecture_version": "v2", "delta_c": 2 / 255,
+              "delta_w": 2 / 255, "eps": 1e-8},
     "channel": {"quantization_mode": "none", "clamp_enabled": False, "attack_mode": "identity"},
     "loss": {"rgb": 1.0, "chroma": 0.0, "luma": 0.0, "message": 1.0, "carrier": 1.0, "range": 0.1},
     "data": {"train_dir": None, "val_dir": None, "image_size": 256, "batch_size": 2, "num_workers": 0},
@@ -17,6 +18,18 @@ DEFAULT_CONFIG = {
               "max_steps": None, "log_every": 10, "output_dir": None},
     "experiment": None,
 }
+
+V1_DEFAULT_CONFIG = deepcopy(DEFAULT_CONFIG)
+V1_DEFAULT_CONFIG["model"] = {
+    "architecture_version": "v1", "channels": 64, "blocks": 8,
+    "delta_c": 2 / 255, "delta_w": 2 / 255, "eps": 1e-8,
+}
+
+
+def architecture_version(config: dict) -> str:
+    """Missing model version is intentionally classified as legacy V1."""
+    model = config.get("model") if isinstance(config, dict) else None
+    return model.get("architecture_version", "v1") if isinstance(model, dict) else "v1"
 
 
 def _merge(base: dict, update: dict, prefix: str = "") -> None:
@@ -44,8 +57,14 @@ def validate_config(config: dict) -> None:
             raise ValueError(f"Invalid {name}: {value}")
 
     positive_int(config["seed"], "seed", 0)
-    for key in ("channels", "blocks"):
-        positive_int(config["model"][key], "model." + key)
+    version = architecture_version(config)
+    if version not in ("v1", "v2"):
+        raise ValueError("model.architecture_version must be v1 or v2")
+    if version == "v1":
+        for key in ("channels", "blocks"):
+            positive_int(config["model"][key], "model." + key)
+    elif any(key in config["model"] for key in ("channels", "blocks")):
+        raise ValueError("model.channels and model.blocks are V1-only architecture fields")
     for key in ("delta_c", "delta_w", "eps"):
         number(config["model"][key], "model." + key, strict=(key == "eps"))
     for key, value in config["loss"].items():
@@ -54,6 +73,8 @@ def validate_config(config: dict) -> None:
         raise ValueError("At least one loss weight must be positive")
     data, training, channel = config["data"], config["train"], config["channel"]
     positive_int(data["image_size"], "data.image_size", 8)
+    if version == "v2" and data["image_size"] != 256:
+        raise ValueError("Network V2 requires data.image_size=256")
     if data["image_size"] % 8:
         raise ValueError("data.image_size must be divisible by 8")
     positive_int(data["batch_size"], "data.batch_size")
@@ -77,10 +98,11 @@ def validate_config(config: dict) -> None:
     if channel["quantization_mode"] != "none" and not channel["clamp_enabled"]:
         raise ValueError("8-bit modes require clamp_enabled=true")
     if channel["attack_mode"] != "identity":
-        raise ValueError("V1 implements identity attacks only")
+        raise ValueError("The current protocol implements identity attacks only")
     if not isinstance(config["device"], str) or not (
-        config["device"] in ("auto", "cpu", "cuda") or config["device"].startswith("cuda:")):
-        raise ValueError("device must be auto, cpu, cuda or cuda:N")
+        config["device"] in ("auto", "cpu", "mps", "cuda")
+            or config["device"].startswith("cuda:")):
+        raise ValueError("device must be auto, cpu, mps, cuda or cuda:N")
     experiment = config.get("experiment")
     if experiment is not None:
         if not isinstance(experiment, dict):
@@ -111,9 +133,16 @@ def validate_config(config: dict) -> None:
 
 
 def load_config(path: str | Path | None = None) -> dict:
-    config = deepcopy(DEFAULT_CONFIG)
+    update = None
     if path is not None:
         with Path(path).open(encoding="utf-8-sig") as stream:
-            _merge(config, json.load(stream))
+            update = json.load(stream)
+        if not isinstance(update, dict):
+            raise ValueError("config must be a JSON object")
+    version = (architecture_version(update) if update is not None else
+               DEFAULT_CONFIG["model"]["architecture_version"])
+    config = deepcopy(V1_DEFAULT_CONFIG if version == "v1" else DEFAULT_CONFIG)
+    if update is not None:
+        _merge(config, update)
     validate_config(config)
     return config
