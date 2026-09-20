@@ -17,7 +17,7 @@
 
 ## Confirmed baseline parameters
 
-The working design record is [configs/v2_clean_baseline_tbd.md](configs/v2_clean_baseline_tbd.md). Key confirmed values are:
+The formal single-H100 configuration is [configs/v2_clean_baseline_h100.json](configs/v2_clean_baseline_h100.json). Key values are:
 
 - Seed: `2026`
 - Image size: `256`
@@ -26,6 +26,13 @@ The working design record is [configs/v2_clean_baseline_tbd.md](configs/v2_clean
 - Adam, learning rate `1e-4`, weight decay `0`, gradient clipping `1`
 - Loss weights: RGB `1.0`, message `1.0`, carrier `1.0`, range `0.1`; chroma and luma `0.0`
 - Float clean channel: no quantization, identity, no clamp
+- Full DIV2K: 800 train images and 100 validation images
+- Logical/effective batch size: `16`; micro-batch size: `16`
+- Gradient accumulation steps: `1`; DataLoader workers: `8`
+- Budget: at most `50,000` optimizer steps (`epochs=1000`, 50 steps per complete epoch)
+- Messages: fresh random 64-bit messages during training and deterministic messages during validation
+- Runtime precision: FP32; BF16, AMP, and TF32 are disabled
+- Output: `/data/zwc/zyh/experiments/dual-payload-watermark/network-v2/v2_clean_div2k_full_fp32_b16_ga1_seed2026_run01`
 
 ## Batch semantics
 
@@ -34,23 +41,15 @@ The working design record is [configs/v2_clean_baseline_tbd.md](configs/v2_clean
 - Gradients do not accumulate across DataLoader batches.
 - Each DataLoader iteration performs one `optimizer.step()`.
 
-## Current TBD
-
-- Training and validation data scale
-- Logical/effective batch size
-- Gradient accumulation and resulting micro-batch size
-- `epochs`, `max_steps`, and total optimizer-step budget
-- `num_workers`
-- Train, validation, and output paths
-- Random-message or fixed-message experiment organization
-- BF16, AMP, and TF32 strategy
-
 ## Server deployment principles
 
 - Clone and use `feature/network-v2-clean`, not the default historical branch.
-- Determine all dataset and output paths after deployment to the server.
+- Use one H100 selected through `CUDA_VISIBLE_DEVICES`; the current trainer is single-GPU.
+- Train data: `/data/zwc/Data/DIV2K/DIV2K_train_HR`.
+- Validation data: `/data/zwc/Data/DIV2K/DIV2K_valid_HR`.
+- The configured output directory must be new or empty for a fresh run.
 - Do not inherit local Windows absolute paths.
-- The final formal training config has not been generated yet.
+- Start with `python train.py --config configs/v2_clean_baseline_h100.json --gradient-accumulation-steps 1`.
 
 ## Cleanup status
 

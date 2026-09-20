@@ -26,9 +26,7 @@ Network V2 dual-payload watermarking system for color recovery and 64-bit waterm
 
 ## Current status
 
-Network V2 is implemented. The formal experiment scale, logical batch size, gradient accumulation, epoch/step budget, and server paths are still being determined.
-
-The current parameter design draft is [configs/v2_clean_baseline_tbd.md](configs/v2_clean_baseline_tbd.md). It is a planning template, not a ready-to-run formal training configuration.
+Network V2 is implemented. The single-H100 FP32 baseline configuration is ready at [configs/v2_clean_baseline_h100.json](configs/v2_clean_baseline_h100.json). It uses the full DIV2K split, logical batch size 16, random 64-bit training messages, and a 50,000 optimizer-step budget.
 
 ## Entry points
 
@@ -41,7 +39,7 @@ The current parameter design draft is [configs/v2_clean_baseline_tbd.md](configs
 ```text
 dual_payload/                         Network V2 models, system, data, losses, and training logic
 tests/                                Network V2 tests
-configs/v2_clean_baseline_tbd.md      Baseline parameter and TBD design draft
+configs/v2_clean_baseline_h100.json   Formal single-H100 FP32 baseline configuration
 train.py                              Training entry point
 evaluate.py                           Evaluation entry point
 diagnose_watermark.py                 Diagnostic entry point
