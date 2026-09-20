@@ -14,7 +14,6 @@
 - Modules: Color Encoder (`Ec`), Watermark Encoder (`Ew`), Color Decoder (`Dc`), and Watermark Decoder (`Dw`)
 - Architecture version: `v2`
 
-The authoritative architecture specification is [docs/network2/network2_architecture.md](docs/network2/network2_architecture.md).
 
 ## Confirmed baseline parameters
 

@@ -16,7 +16,6 @@ Network V2 dual-payload watermarking system for color recovery and 64-bit waterm
 - `Dc`: Color Decoder
 - `Dw`: Watermark Decoder
 
-The complete architecture specification is in [docs/network2/network2_architecture.md](docs/network2/network2_architecture.md).
 
 ## Training baseline
 
@@ -43,7 +42,6 @@ The current parameter design draft is [configs/v2_clean_baseline_tbd.md](configs
 dual_payload/                         Network V2 models, system, data, losses, and training logic
 tests/                                Network V2 tests
 configs/v2_clean_baseline_tbd.md      Baseline parameter and TBD design draft
-docs/network2/                        Network V2 architecture specification
 train.py                              Training entry point
 evaluate.py                           Evaluation entry point
 diagnose_watermark.py                 Diagnostic entry point
