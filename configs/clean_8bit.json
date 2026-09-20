@@ -1,4 +1,0 @@
-{
-  "model": {"architecture_version": "v2"},
-  "channel": {"quantization_mode": "ste8", "clamp_enabled": true, "attack_mode": "identity"}
-}
