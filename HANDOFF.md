@@ -1,56 +1,60 @@
-# Network V2 Handoff
+# 医疗灰度共享代码交接
 
-## Current Git state
+更新：2026-09-30。当前工作目录位于桌面 `dual-payload-watermark`，分支为 `V3`。
+本轮依据用户提供的修正统一方案及六项实现约定修改代码；当前方案不包含篡改定位。
 
-- Active branch: `feature/network-v2-clean`
-- `main` and `baseline-v1` preserve the Network V1 history.
-- Network V2 requires `architecture_version=v2` and refuses Network V1 checkpoints.
+## 当前代码
 
-## Network V2 core
+- 原 64 bit Network V2 模块和训练入口保留，作为基线。
+- 医疗首版入口为 `dual_payload.medical`，模型版本 `medical-v1`。
+- 已连接颜色量化、两路 AES-256-GCM、真实 Sionna LDPC、交织、236／2 通道 Ew/Dw、双输入 Dc、PNG 保存重读、医院签名与接收恢复接口。
+- 收发共享登记后的 Profile；每个 ID 固定绑定配置、排列文件和四网络权重摘要。
+- 三种幅度为 `color_residual`、`color_ciphertext`、`patient_ciphertext`；正式模板没有任意默认值。
+- 密钥、数据、权重、nonce 数据库和生成的文件应保存在源码目录之外。
 
-- Input: `256×256` RGB images
-- Payload: 64-bit binary message
-- Recovery: blind color and message recovery from the received grayscale carrier
-- Modules: Color Encoder (`Ec`), Watermark Encoder (`Ew`), Color Decoder (`Dc`), and Watermark Decoder (`Dw`)
-- Architecture version: `v2`
+实现格式、运行命令和证据边界见 [docs/medical_v1.md](docs/medical_v1.md)。
 
+## 医学主实验工具
 
-## Confirmed baseline parameters
+用户已确定 PAD-UFES-20 为主实验数据、Derm7pt 为外部验证数据，并授权继续补齐代码。
+新增 `dual_payload.medical.experiment` 入口：
 
-The formal single-H100 configuration is [configs/v2_clean_baseline_h100.json](configs/v2_clean_baseline_h100.json). Key values are:
+- PAD 患者/病灶分组、文件及工作图去重检查，Derm7pt 两模态外部清单。
+- 原 V2 权重严格核验及迁移记录，训练集 39 频率步长标定。
+- 独立医疗训练配置、显式阶段、真实加密/纠错样本、验证、梯度累积及断点恢复。
+- checkpoint 冻结为四份权重及 Profile，保存评价口径和数据清单。
+- 批量真实 PNG 与独立接收进程，失败保留分母，输出两路传输指标及成功样本的区域质量。
 
-- Seed: `2026`
-- Image size: `256`
-- Message length: 64 bits
-- `delta_c=2/255`, `delta_w=2/255`, `eps=1e-8`
-- Adam, learning rate `1e-4`, weight decay `0`, gradient clipping `1`
-- Loss weights: RGB `1.0`, message `1.0`, carrier `1.0`, range `0.1`; chroma and luma `0.0`
-- Float clean channel: no quantization, identity, no clamp
-- Full DIV2K: 800 train images and 100 validation images
-- Logical/effective batch size: `16`; micro-batch size: `16`
-- Gradient accumulation steps: `1`; DataLoader workers: `8`
-- Budget: at most `50,000` optimizer steps (`epochs=1000`, 50 steps per complete epoch)
-- Messages: fresh random 64-bit messages during training and deterministic messages during validation
-- Runtime precision: FP32; BF16, AMP, and TF32 are disabled
-- Output: `/data/zwc/zyh/experiments/dual-payload-watermark/network-v2/v2_clean_div2k_full_fp32_b16_ga1_seed2026_run01`
+运行步骤和尚需填写的参数见 [docs/medical_experiment.md](docs/medical_experiment.md)。
 
-## Batch semantics
+用户已确认单卡 H100 80 GB，并要求先运行主实验；随后明确服务器连接与路径稍后提供。当前继续完成启动准备，不连接服务器、不声称已启动医学训练。
+用户最新要求四网络一起训练。主实验入口已改为单次 `joint` 训练，配置为 `configs/medical_h100_80gb_joint.json`，原 A/B/C 主实验配置已移除。从第一步同时更新 Ec/Ew/Dc/Dw，不冻结网络、不自动切换阶段、不插入单独短训。有效 batch 16、micro-batch 4，AdamW、新旧层学习率、预热/余弦调度和显存日志。数据增强关闭，仅使用固定 256×256 预处理；训练前标定一次步长并全程固定。
+还需真实服务器路径和原权重，才能执行 H100 训练。周期性网络验证按 loss/BER 记录；完整 PNG 业务验收使用独立评测入口。
 
-- `batch_size` is the logical/effective batch size and the DataLoader batch size.
-- `gradient_accumulation_steps` splits one logical batch into micro-batches.
-- Gradients do not accumulate across DataLoader batches.
-- Each DataLoader iteration performs one `optimizer.step()`.
+## 检查与证据
 
-## Server deployment principles
+```sh
+.venv/bin/python -m pytest tests/medical -q
+.venv/bin/python -m pytest -q
+```
 
-- Clone and use `feature/network-v2-clean`, not the default historical branch.
-- Use one H100 selected through `CUDA_VISIBLE_DEVICES`; the current trainer is single-GPU.
-- Train data: `/data/zwc/Data/DIV2K/DIV2K_train_HR`.
-- Validation data: `/data/zwc/Data/DIV2K/DIV2K_valid_HR`.
-- The configured output directory must be new or empty for a fresh run.
-- Do not inherit local Windows absolute paths.
-- Start with `python train.py --config configs/v2_clean_baseline_h100.json --gradient-accumulation-steps 1`.
+新测试区分：
 
-## Cleanup status
+1. 整数打包、实际 LDPC、密码、签名、文件与权限的精确正确性。
+2. 原主干及新接口的前向、梯度和独立进程执行。
+3. 未训练网络通过实际 PNG 的业务提取：应报告解码失败，不能包装成可靠传输。
 
-The current V2 branch has removed the old V1 configs, Network1 documentation, `joint_10x20_v1` assets, and legacy analysis scripts.
+2026-09-30 本机全量检查：`113 passed`（74.33 秒）。一条警告来自原 `tests/test_models.py` 的测试断言将带梯度张量转为标量；没有测试失败。新增实验检查覆盖合成短程优化/续跑、阶段梯度、训练集标定、清单防泄漏、冻结导出和独立进程文件评测。
+
+本轮未发现仓库内的原训练 checkpoint，也未核验服务器训练日志；不能因此断言原网络没有训练。
+本机仅对合成数据运行短程优化、断点恢复和文件评测；未启动医学主训练或 H100 检查，没有医学质量或传输容量结论。
+
+## 后续所需材料
+
+- 核验过的原 Ec 权重和对应配置、训练记录。
+- 从训练分区残差标定的 39 个量化步长。
+- 明确登记的三个幅度限制、新接口训练权重及其 SHA-256。
+- 医学数据划分、训练设置和正式评价门槛。
+
+这些材料用于服务器上的正式实验，不影响已实现的程序检查。原 V2 脚本保留，医疗训练使用新增独立入口。
+先跑医学主实验，再按结果做消融与扩展。

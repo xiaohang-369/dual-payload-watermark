@@ -1,0 +1,23 @@
+{
+  "schema": "medical-evaluation-policy-v1",
+  "thresholds": {
+    "color_packet_success_min": null,
+    "patient_packet_success_min": null,
+    "color_recovery_success_min": null,
+    "joint_success_min": null,
+    "gray_content_psnr_min": null,
+    "rgb_content_psnr_min": null
+  },
+  "rgb_quality": "conditional-on-exact-color-packet-success",
+  "thresholds_per_modality": true,
+  "psnr_ceiling_db": 120,
+  "color_difference": "CIE76-on-clipped-sRGB-D65",
+  "regions": [
+    "whole",
+    "content"
+  ],
+  "modalities": [
+    "clinical",
+    "dermoscopic"
+  ]
+}

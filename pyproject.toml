@@ -5,12 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dual-payload-grayscale"
 version = "0.1.0"
-description = "Four-network system for color and 64-bit watermark payloads"
+description = "Four-network grayscale sharing with independently encrypted color and patient payloads"
 requires-python = ">=3.11"
-dependencies = ["torch>=2.6", "numpy>=1.26", "Pillow>=10"]
+dependencies = ["torch>=2.6", "numpy>=1.26", "Pillow>=10", "cryptography>=44"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+medical = ["sionna==2.1.0"]
+
+[project.scripts]
+medical-share = "dual_payload.medical.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["dual_payload*"]

@@ -1,0 +1,64 @@
+{
+  "schema": "medical-training-v1",
+  "purpose": "experiment",
+  "stage": "joint",
+  "device": "cuda:0",
+  "threads": 1,
+  "seed": 2026,
+  "image_size": [
+    256,
+    256
+  ],
+  "precision": "fp32",
+  "augmentation": "none",
+  "optimization": {
+    "name": "adamw",
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "new_layer_lr": 0.0001,
+    "schedule": "warmup_cosine",
+    "warmup_steps": 200,
+    "minimum_lr": 1e-06
+  },
+  "manifest": null,
+  "roots": {
+    "pad": null
+  },
+  "calibration": null,
+  "initialization": {
+    "kind": "v2",
+    "path": null,
+    "sha256": null
+  },
+  "contract": {
+    "profile_id": null,
+    "quantization_id": null,
+    "interleaver_seeds": {
+      "color": 20260930,
+      "patient": 20260931
+    }
+  },
+  "rms_limits": {
+    "color_residual": 0.00784313725490196,
+    "color_ciphertext": 0.00784313725490196,
+    "patient_ciphertext": 0.00392156862745098
+  },
+  "epochs": 120,
+  "max_steps": 20000,
+  "batch_size": 16,
+  "micro_batch_size": 4,
+  "lr": 1e-05,
+  "weight_decay": 0.0001,
+  "grad_clip": 1.0,
+  "save_every": 500,
+  "loss_weights": {
+    "rgb": 1.0,
+    "color_bits": 1.0,
+    "patient_bits": 1.0,
+    "gray": 1000.0,
+    "range": 1000.0
+  },
+  "output": null
+}

@@ -1,0 +1,127 @@
+{
+  "architecture": "medical-v1",
+  "dct": {
+    "basis": "orthonormal-dct-ii-8",
+    "color_indices": [
+      5,
+      6,
+      7,
+      12,
+      13,
+      14,
+      15,
+      19,
+      20,
+      21,
+      22,
+      23,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      48,
+      49,
+      50,
+      51,
+      52,
+      56,
+      57,
+      58,
+      59
+    ],
+    "order": "block-row-column-frequency",
+    "patient_indices": [
+      3,
+      10,
+      17,
+      24,
+      4,
+      11,
+      18,
+      25,
+      32
+    ]
+  },
+  "image": {
+    "format": "gray8",
+    "height": 256,
+    "integer_output": "clip-0-1-times-255-round-even",
+    "rgb": "gamma-srgb-bt601-full-zero-chroma",
+    "width": 256
+  },
+  "layout": {
+    "color_blocks": 157,
+    "color_channels": 236,
+    "color_frame_bytes": 20052,
+    "data_padding": "zero",
+    "interleave": "output[i]=codeword[permutation[i]]",
+    "layout_padding_bits": 512,
+    "order": "channel-row-column",
+    "patient_blocks": 1,
+    "patient_channels": 2,
+    "patient_frame_bytes": 76
+  },
+  "ldpc": {
+    "bg": "bg2",
+    "cn_update": "boxplus-phi",
+    "harq": false,
+    "implementation": "sionna",
+    "iterations": 20,
+    "k": 1024,
+    "llr_max": 20.0,
+    "n": 1536,
+    "positive_logits": "bit1",
+    "qam_interleaver": false,
+    "rv": 0,
+    "schedule": "flooding",
+    "version": "2.1.0"
+  },
+  "preprocess": {
+    "geometry": "fit-long-side-256-round-even-center-pad",
+    "input": "RGB8-sRGB-no-ICC",
+    "orientation": "apply-exif-before-resize",
+    "padding": "edge",
+    "padding_embeddable": true,
+    "resize": "pillow-bicubic"
+  },
+  "quantizer": {
+    "bits": 4,
+    "max": 7,
+    "min": -8,
+    "round": "ties-even"
+  },
+  "schema": 1,
+  "profile_id": null,
+  "quantization_id": null,
+  "purpose": "experiment",
+  "quantization_steps": null,
+  "rms_limits": {
+    "color_residual": null,
+    "color_ciphertext": null,
+    "patient_ciphertext": null
+  },
+  "weights": {
+    "ec": null,
+    "ew": null,
+    "dc": null,
+    "dw": null
+  },
+  "interleaver_seeds": {
+    "color": 20260930,
+    "patient": 20260931
+  }
+}

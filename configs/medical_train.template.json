@@ -1,0 +1,58 @@
+{
+  "schema": "medical-training-v1",
+  "purpose": "experiment",
+  "stage": null,
+  "device": "cuda:0",
+  "threads": 1,
+  "seed": 2026,
+  "image_size": [
+    256,
+    256
+  ],
+  "precision": "fp32",
+  "augmentation": "none",
+  "optimization": {
+    "name": "adam",
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "new_layer_lr": null,
+    "schedule": "constant",
+    "warmup_steps": 0,
+    "minimum_lr": 1e-06
+  },
+  "manifest": null,
+  "roots": {
+    "pad": null
+  },
+  "calibration": null,
+  "initialization": {
+    "kind": "v2",
+    "path": null,
+    "sha256": null
+  },
+  "contract": {
+    "profile_id": null,
+    "quantization_id": null,
+    "interleaver_seeds": {
+      "color": 20260930,
+      "patient": 20260931
+    }
+  },
+  "rms_limits": {
+    "color_residual": null,
+    "color_ciphertext": null,
+    "patient_ciphertext": null
+  },
+  "epochs": null,
+  "max_steps": null,
+  "batch_size": null,
+  "micro_batch_size": null,
+  "lr": null,
+  "weight_decay": 0.0,
+  "grad_clip": 1.0,
+  "save_every": null,
+  "loss_weights": {},
+  "output": null
+}
