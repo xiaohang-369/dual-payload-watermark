@@ -88,6 +88,30 @@ Ec 残差和颜色嵌入 RMS 上限为 `2/255`，患者嵌入 RMS 上限为 `1/2
 
 本次实验根目录固定为 `/data/zwc/zyh/experiments/v3clean-main-run01`。数据路径到位后，在服务器仓库根目录执行以下完整命令（程序自动创建实验根目录及训练所需子目录）：
 
+输入读取支持完全不透明的 RGBA，并按嵌入的 RGB ICC 转换到 sRGB；详细规则见 [工作图预处理](medical_v1.md#5-工作图和-png)。原始图片不改写，manifest 保留原文件摘要及归一化后的工作图摘要。用户提供的服务器检查输出显示 2298 张图片中有 1440 张完全不透明 RGBA，以及 2 张带 `Google Skia` RGB ICC 的图片；两张 ICC 图片的模式均为 RGB。此统计来自服务器检查输出，本地合成测试不替代服务器实际解码验证。
+
+同步新版代码后，可先在服务器仓库根目录执行以下只读检查，遍历实际预处理；该命令不生成实验文件或启动训练：
+
+```sh
+python - <<'PY'
+from pathlib import Path
+from dual_payload.medical.preprocess import prepare_work_image
+
+paths = sorted(Path('/data/zwc/zyh/data/PAD-UFES-20/images').rglob('*.png'))
+passed = 0
+for path in paths:
+    try:
+        prepare_work_image(path)
+        passed += 1
+    except Exception as exc:
+        print(f'FAIL {path}: {exc}')
+print(f'预处理通过 {passed}/{len(paths)}')
+raise SystemExit(0 if paths and passed == len(paths) else 1)
+PY
+```
+
+主训练完整启动命令：
+
 ```sh
 python -u -m dual_payload.medical.main_experiment \
   --config configs/medical_h100_80gb_joint.json \

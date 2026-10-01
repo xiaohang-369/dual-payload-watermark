@@ -32,7 +32,9 @@ FIXED = {
     "preprocess": {"orientation": "apply-exif-before-resize", "resize": "pillow-bicubic",
                    "geometry": "fit-long-side-256-round-even-center-pad",
                    "padding": "edge", "padding_embeddable": True,
-                   "input": "RGB8-sRGB-no-ICC"},
+                   "input": "RGB8-or-opaque-RGBA8",
+                   "untagged_color": "assume-sRGB",
+                   "icc": "embedded-RGB-to-sRGB-relative-colorimetric-flags-0-before-resize"},
     "architecture": ARCHITECTURE,
 }
 

@@ -92,7 +92,9 @@
   },
   "preprocess": {
     "geometry": "fit-long-side-256-round-even-center-pad",
-    "input": "RGB8-sRGB-no-ICC",
+    "input": "RGB8-or-opaque-RGBA8",
+    "untagged_color": "assume-sRGB",
+    "icc": "embedded-RGB-to-sRGB-relative-colorimetric-flags-0-before-resize",
     "orientation": "apply-exif-before-resize",
     "padding": "edge",
     "padding_embeddable": true,

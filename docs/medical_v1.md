@@ -90,7 +90,10 @@ torch.save({
 
 ## 5. 工作图和 PNG
 
-输入约定为单帧 RGB8 sRGB，无 ICC 和透明。先应用 EXIF 方向，再把长边缩放到 256；短边按最近值半值取偶确定，至少为 1。使用 Pillow bicubic，居中 edge 补边保留完整视野。
+输入接受单帧 RGB8 和完全不透明的 RGBA8。RGBA 必须逐像素 alpha=255，检查后去掉 alpha 并保留 RGB 数值；真实透明、半透明和透明色键仍拒绝，不自动选择合成背景。
+无 ICC 时按 sRGB 解释；有 ICC 时使用嵌入的 RGB profile，经 Pillow/LittleCMS 转换为 sRGB（relative colorimetric、flags=0）。不根据 profile 名称猜测色彩空间，不直接丢弃 ICC；损坏或非 RGB profile 报错并标明文件路径。转换只作用于内存中的工作图，原始文件保持不变。
+先应用 EXIF 方向，去除已确认不透明的 alpha 并完成 ICC 转换，再把长边缩放到 256；短边按最近值半值取偶确定，至少为 1。使用 Pillow bicubic，居中 edge 补边保留完整视野。
+上述规则写入 Profile 和 manifest 的 `preprocess` 字段；旧预处理记录不会被自动替换。无 ICC 的 RGB 图片继续使用原有像素处理流程。
 补边参与嵌入，保持 32×32 个 DCT 块。有效内容 `(x,y,w,h)` 写入受签名保护的认证头。
 恢复对象为这个工作图；评价应同时报告内容区域和整张工作图的结果。
 

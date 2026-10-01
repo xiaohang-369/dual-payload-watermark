@@ -1,5 +1,6 @@
 """Retain the full oriented RGB image, resize to fit, then edge-pad to 256."""
 
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -9,13 +10,29 @@ from PIL import Image, ImageOps
 
 def prepare_work_image(path: str | Path):
     with Image.open(path) as source:
-        if (source.mode != "RGB" or getattr(source, "n_frames", 1) != 1 or
-                source.info.get("icc_profile") or "transparency" in source.info):
-            raise ValueError("Input must be a single RGB8 sRGB image without ICC or transparency")
+        if source.mode not in ("RGB", "RGBA") or getattr(source, "n_frames", 1) != 1:
+            raise ValueError(f"Input must be a single RGB8 or opaque RGBA8 image: {path}")
+        if "transparency" in source.info or (
+                source.mode == "RGBA" and source.getchannel("A").getextrema() != (255, 255)):
+            raise ValueError(f"Input contains transparency; an explicit compositing policy is required: {path}")
+        icc = source.info.get("icc_profile")
         orientation = source.getexif().get(274, 1)
         if orientation not in range(1, 9):
             raise ValueError("Unsupported EXIF orientation")
         image = ImageOps.exif_transpose(source)
+        if image.mode == "RGBA":
+            image = image.convert("RGB")  # Alpha was checked; retain the RGB samples exactly.
+        if icc:
+            from PIL import ImageCms
+            try:
+                profile = ImageCms.ImageCmsProfile(BytesIO(icc))
+                if profile.profile.xcolor_space.strip() != "RGB":
+                    raise ValueError("ICC profile does not describe RGB pixels")
+                image = ImageCms.profileToProfile(
+                    image, profile, ImageCms.createProfile("sRGB"), outputMode="RGB",
+                    renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC, flags=0)
+            except (ImageCms.PyCMSError, OSError, TypeError, ValueError) as exc:
+                raise ValueError(f"Cannot convert embedded RGB ICC profile to sRGB: {path}: {exc}") from exc
         width, height = image.size
         longest = max(width, height)
         new_w, new_h = max(1, round(width * 256 / longest)), max(1, round(height * 256 / longest))
