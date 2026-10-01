@@ -74,8 +74,8 @@ python -m dual_payload.medical.experiment calibrate \
 
 ### H100 80 GB 主实验入口
 
-主实验配置为 `configs/medical_h100_80gb_joint.json`，`stage=joint`。Ec/Ew/Dc/Dw 从第一步同时更新，不冻结网络，不做阶段切换。
-共同设置为 256×256、FP32、有效 batch 16、micro-batch 4、AdamW、权重衰减 `1e-4`、梯度裁剪 1。按用户最新要求关闭数据增强，训练集只做固定的等比缩放和补边。
+主入口必须通过 `--config` 指定 JSON；该文件是训练超参数的唯一来源，代码不再维护一份重复预设。当前预设为 `configs/medical_h100_80gb_joint.json`，`stage=joint`。Ec/Ew/Dc/Dw 从第一步同时更新，不冻结网络，不做阶段切换。
+当前预设设置为 256×256、FP32、有效 batch 16、micro-batch 4、AdamW、权重衰减 `1e-4`、梯度裁剪 1。按用户最新要求关闭数据增强，训练集只做固定的等比缩放和补边。
 Ec 残差和颜色嵌入 RMS 上限为 `2/255`，患者嵌入 RMS 上限为 `1/255`。
 
 | 模式 | 更新网络 | 学习率 | 上限 |
@@ -86,22 +86,34 @@ Ec 残差和颜色嵌入 RMS 上限为 `2/255`，患者嵌入 RMS 上限为 `1/2
 轮数和更新次数任一达到上限即结束。总损失包含 RGB L1 权重 1、两路 BCE 各 1、灰度 MSE 1000、越界 MSE 1000。
 这些是首轮工程设置，尚未在 H100 医学数据上验证。主实验不使用旋转、翻转或颜色增强。
 
-路径到位后，在服务器环境执行：
+本次实验根目录固定为 `/data/zwc/zyh/experiments/v3clean-main-run01`。数据路径到位后，在服务器仓库根目录执行以下完整命令（程序自动创建实验根目录及训练所需子目录）：
 
 ```sh
 python -u -m dual_payload.medical.main_experiment \
-  --pad-root /absolute/data/PAD-UFES-20 \
-  --pad-metadata /absolute/data/PAD-UFES-20/metadata.csv \
-  --output /absolute/experiments/medical-main-01
+  --config configs/medical_h100_80gb_joint.json \
+  --pad-root /data/zwc/zyh/data/PAD-UFES-20 \
+  --pad-metadata /data/zwc/zyh/data/PAD-UFES-20/metadata.csv \
+  --output /data/zwc/zyh/experiments/v3clean-main-run01
 ```
 
-程序要求可用的完整 H100 80 GB，拒绝本机 CPU 和显存不足的 MIG 分区；按患者合并组 70/15/15、seed 2026 创建 PAD 清单。
+程序检查 JSON 中 `device` 指定的 GPU，要求可用的完整 H100 80 GB，拒绝本机 CPU 和显存不足的 MIG 分区；按患者合并组 70/15/15 创建 PAD 清单。清单划分、初始标定和训练统一使用 JSON 的 `seed`（当前预设为 2026）。
 先按 seed 随机初始化四网络，再用训练集初始化一次步长（绝对系数分位数 0.999，退化 RMS 阈值 `1e-6`）。随后直接进入一轮完整联合训练；步长保持固定，Ec 继续学习适应该量化配置，并记录裁剪比例。
-每轮和每 500 次更新进行网络验证；当前最佳权重按验证总损失选择。日志包含各参数组学习率和 CUDA 峰值 allocated/reserved 字节数。正式业务成功率由第 6 节的独立文件评测确认。
+每轮和每 `save_every` 次更新进行网络验证（当前预设 500）；当前最佳权重按验证总损失选择。日志包含各参数组学习率和 CUDA 峰值 allocated/reserved 字节数。正式业务成功率由第 6 节的独立文件评测确认。
 
-中断后使用同一命令恢复；保留整个输出目录。训练权重保存在 `joint/`，配置为 `train-joint.json`；已完成训练通过带摘要的完成记录识别，未完成训练恢复 `joint/last.pt`。并发运行同一目录会被文件锁拒绝。
-若要用 micro-batch 2，初次启动时加 `--micro-batch-size 2`，有效 batch 仍为 16。已启动目录的配置不得静默修改；出现显存不足时保留该目录，在新目录中明确调整配置。
-模板中保留数据、标定和输出路径及公共 ID 的空位；启动器会填入这些字段。`initialization.path` 和 `initialization.sha256` 必须保持 `null`。Profile ID/量化 ID 默认 1，可以通过命令参数指定，最终发布仍遵守不可重绑定规则。
+启动器按数据参数和 `--output` 填入运行路径，覆盖 JSON 的这些路径占位；无需手写生成文件：
+
+| 实际配置字段或文件 | 本次位置 |
+| --- | --- |
+| `roots.pad` | `/data/zwc/zyh/data/PAD-UFES-20` |
+| `manifest` | `/data/zwc/zyh/experiments/v3clean-main-run01/manifest.json` |
+| `calibration` | `/data/zwc/zyh/experiments/v3clean-main-run01/calibration.json` |
+| `output` | `/data/zwc/zyh/experiments/v3clean-main-run01/joint` |
+| 实际生效配置 | `/data/zwc/zyh/experiments/v3clean-main-run01/train-joint.json` |
+
+`epochs`、`lr`、`batch_size`、`loss_weights` 等超参数直接取自指定 JSON。`micro_batch_size` 必须为正整数且不大于 JSON 中的 `batch_size`；无需整除 batch，最后一个 micro-batch 按实际样本数累计梯度。需要临时调整时，显式传入 `--micro-batch-size 2` 才覆盖 JSON；不传就保留文件值，`batch_size` 始终由 JSON 决定。
+Profile ID/量化 ID 优先使用显式 `--profile-id` / `--quantization-id`，否则保留 JSON 值，仅 `null` 时补为 1。主入口保留 `scratch`、`joint`、无增强和 FP32 校验；`initialization.path` 和 `initialization.sha256` 必须保持 `null`。最终发布仍遵守 ID 不可重绑定规则。
+
+中断后使用同一命令和配置恢复，保留整个输出目录。完整生效配置纳入 `main-inputs.json` 一致性记录，并与 `train-joint.json`、checkpoint 校验；修改超参数、代码、数据或标定后不得混用原目录。程序不会覆盖配置或删除旧结果来绕过检查。已完成训练通过带摘要的完成记录识别，未完成训练恢复 `joint/last.pt`；并发运行同一目录会被文件锁拒绝。若已有结果不匹配，应先保留原目录并处理不一致原因；本次命令仍使用上述固定目录。
 
 ### 训练内部计算
 

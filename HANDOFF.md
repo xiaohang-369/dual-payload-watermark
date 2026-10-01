@@ -16,8 +16,9 @@
 ## 启动与续跑
 
 主入口：`python -m dual_payload.medical.main_experiment`。
-只需 `--pad-root`、`--pad-metadata`、`--output`；没有外部权重参数。详见 [运行说明](docs/medical_experiment.md)。
-主配置：`configs/medical_h100_80gb_joint.json`。`initialization.kind=scratch`，path/SHA-256 保持 null。
+必填 `--config`、`--pad-root`、`--pad-metadata`、`--output`；没有外部权重参数。完整启动命令见 [运行说明](docs/medical_experiment.md)。
+主配置：`configs/medical_h100_80gb_joint.json`，由 `--config` 显式传入，是训练超参数的唯一来源；已删除 Python `h100_config()` 重复预设。`initialization.kind=scratch`，path/SHA-256 保持 null。seed 统一从 JSON 读取，micro-batch 按实际 batch 大小校验，只有显式 CLI 选项覆盖文件值。
+本次 `--output /data/zwc/zyh/experiments/v3clean-main-run01`；程序自动创建目录，在根目录生成 manifest/calibration/train-joint JSON，实际训练输出为其下 `joint`。完整生效配置参与续训一致性校验，不得覆盖或删除旧结果来绕过检查。
 
 程序创建清单、初始步长和配置，随后联合训练；中断后使用同一命令及输出目录恢复。
 训练前保存 step 0 检查点，支持首次更新/验证前中断后的恢复；训练后保存 `last.pt`、`best.pt` 和完成记录。
@@ -46,11 +47,13 @@ Ew 输入亮度与两路载荷；Dc 输入实际灰度和解密后的反量化�
 
 2026-10-01 清理后全量测试：`82 passed`（72.22 秒），无警告。旧基线专用测试随功能删除，公共组件测试保留并整理。所有 22 个包子模块和全部测试的本地导入可解析；三个模块入口帮助、安装后的 `medical-share` 以及 `git diff --check` 均通过。
 
+2026-10-01 配置入口修复后全量测试：`91 passed`（68.26 秒）；主入口 `--help` 和 `git diff --check` 通过。新增回归验证 JSON 的 epochs/lr/batch_size/loss_weights 进入实际配置及合成训练 checkpoint，seed 贯通清单和标定，显式 CLI 覆盖、自动建目录、非法配置拒绝及同目录参数变化不改写旧文件。仅运行合成程序测试，未启动医学主训练。
+
 本机 `.venv` 的 editable 注册文件被系统标记为 hidden，导致仓库外无法导入；已使用 `uv pip install --python .venv/bin/python --no-deps --no-build-isolation --offline .` 安装当前源码构建的普通包，未更改依赖版本。仓库外已验证可导入全部模块，安装包不含删除的旧模块，安装的全部 23 个 Python 文件与已测试源码逐字节一致。该普通安装不会自动跟随后续源码变化，更新源码后需重新安装；服务器按 README 在自身环境安装。
 
 合成测试覆盖量化/打包、密码/LDPC、签名和失败路径、网络前向梯度、无外部权重的联合训练、初始化一致性、首次更新前中断后的恢复、续跑和独立接收。
 医学数据训练和 H100 显存/吞吐尚未实测；程序测试通过不代表载荷可靠提取或医学恢复质量达标。
-服务器路径稍后由用户提供；本轮不连接服务器、不上传 GitHub、不下载数据、不启动医学训练。
+本次服务器实验根目录已指定为 `/data/zwc/zyh/experiments/v3clean-main-run01`；本轮只修正配置入口和运行说明，不连接服务器、不上传 GitHub、不下载数据、不启动医学主训练。
 
 ## 历史文件清理清单
 

@@ -62,7 +62,17 @@ PAD-UFES-20 用于主训练及内部验证/测试，Derm7pt 用于外部评测�
 工具不自动下载数据；主实验从头训练，步长由训练集初始化。
 
 单卡 H100 80 GB 的主实验参数见 `configs/medical_h100_80gb_joint.json`：四网络从第一步一起训练，关闭数据增强。
-`python -m dual_payload.medical.main_experiment --help` 提供主实验启动入口，只需 PAD 数据、metadata.csv 和输出目录，自动完成随机初始化、一次步长标定并启动联合训练，支持断点恢复。无需外部 checkpoint。
+主入口必须传入 `--config`，指定 JSON 是训练超参数的唯一来源；数据清单、量化标定和输出路径自动生成，支持一致性校验后的断点恢复。无需外部 checkpoint。在服务器仓库根目录启动本次实验：
+
+```sh
+python -u -m dual_payload.medical.main_experiment \
+  --config configs/medical_h100_80gb_joint.json \
+  --pad-root /data/zwc/zyh/data/PAD-UFES-20 \
+  --pad-metadata /data/zwc/zyh/data/PAD-UFES-20/metadata.csv \
+  --output /data/zwc/zyh/experiments/v3clean-main-run01
+```
+
+程序自动创建所需目录；`manifest.json`、`calibration.json`、`train-joint.json` 保存在实验根目录，实际配置的 `output` 为其下的 `joint`。只有显式传入的 micro-batch/公共 ID 选项覆盖 JSON。同目录续训必须通过配置、代码和输入记录一致性检查，不能覆盖或删除旧结果来绕过。
 
 ## 当前入口与版本
 

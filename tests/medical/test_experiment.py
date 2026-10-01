@@ -1,5 +1,6 @@
 """Synthetic program checks only; no claim of trained medical performance."""
 import csv
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from dual_payload.medical.learning import (ResidualQuantizer, PayloadFactory, in
 from dual_payload.medical.profile import read_json
 from dual_payload.medical.protocol import dequantize_residual
 from dual_payload.medical.training import training_template, train, validate_training, STAGES
+
+H100_CONFIG = Path(__file__).resolve().parents[2] / 'configs' / 'medical_h100_80gb_joint.json'
 
 
 def write_csv(path, fields, rows):
@@ -300,9 +303,8 @@ def test_frozen_evaluation_thresholds_are_required(assets, trained, tmp_path):
 
 
 def test_h100_optimizer_groups_and_resumable_schedule(assets, tmp_path):
-    from dual_payload.medical.main_experiment import h100_config
     from dual_payload.medical.optimization import make_optimizer, schedule_step
-    config = h100_config()
+    config = read_json(H100_CONFIG)
     config.update(manifest=str(assets['manifest']), roots=assets['roots'],
                   calibration=str(assets['calibration']), initialization=assets['initialization'],
                   output=str(tmp_path/'run'))
@@ -347,9 +349,9 @@ def test_geometry_preserves_pixels_and_content_region():
 
 
 def test_adamw_augmented_resume_matches_uninterrupted_color_training(assets, tmp_path):
-    from dual_payload.medical.main_experiment import h100_config, run_training
+    from dual_payload.medical.main_experiment import run_training
     config = config_for(assets, tmp_path/'split')
-    preset = h100_config()
+    preset = read_json(H100_CONFIG)
     config.update(stage='color', lr=1e-5, loss_weights={'rgb': 1.0},
                   optimization=preset['optimization'], augmentation='dihedral', weight_decay=1e-4)
     config['optimization']['warmup_steps'] = 1
@@ -367,29 +369,45 @@ def test_adamw_augmented_resume_matches_uninterrupted_color_training(assets, tmp
     assert run_training(config) == result
 
 
-def test_main_joint_run_uses_one_calibration_and_updates_all_networks(assets, tmp_path, monkeypatch):
+def test_main_joint_run_uses_json_one_calibration_and_updates_all_networks(assets, tmp_path):
     import dual_payload.medical.main_experiment as main
-    preset = main.h100_config
-    def small():
-        config = preset()
-        config.update(device='cpu', epochs=1, max_steps=1, batch_size=2)
-        config['optimization']['warmup_steps'] = 0
-        return config
-    monkeypatch.setattr(main, 'h100_config', small)
-    result = main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, 1, 1, 1)
+    preset = read_json(H100_CONFIG)
+    preset.update(device='cpu', epochs=2, max_steps=1, batch_size=3, micro_batch_size=2,
+                  lr=2e-4, seed=2027)
+    preset['loss_weights'].update(rgb=2., gray=500.)
+    preset['optimization']['warmup_steps'] = 0
+    path = tmp_path/'input.json'
+    path.write_text(json.dumps(preset))
+    config = main.resolve_config(assets['pad'], tmp_path, config_path=path)
+    result = main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, config)
     assert result['status'] == 'training_complete'
     config = read_json(tmp_path/'train-joint.json')
     assert config['stage'] == 'joint' and config['augmentation'] == 'none'
     assert config['initialization'] == {'kind': 'scratch', 'path': None, 'sha256': None}
-    assert config['lr'] == 1e-4 and 'new_layer_lr' not in config['optimization']
+    for key in ('epochs', 'lr', 'batch_size', 'micro_batch_size', 'loss_weights', 'seed'):
+        assert config[key] == preset[key]
+    assert load_record(tmp_path/'manifest.json')['seed'] == 2027
+    assert load_record(tmp_path/'calibration.json')['seed'] == 2027
     assert len(list(tmp_path.glob('calibration*.json'))) == 1
     assert not list(tmp_path.glob('stage-*'))
     torch.manual_seed(config['seed'])
     initial = make_models(config['rms_limits'], seed=config['seed']); initialize_models(initial, config['initialization'])
-    trained = torch.load(tmp_path/'joint'/'last.pt', weights_only=True)['models']
+    checkpoint = torch.load(tmp_path/'joint'/'last.pt', weights_only=True)
+    assert checkpoint['config'] == config
+    assert checkpoint['optimizer']['param_groups'][0]['initial_lr'] == preset['lr']
+    trained = checkpoint['models']
     for name in ('ec', 'ew', 'dc', 'dw'):
         assert any(not torch.equal(value, trained[name+'.'+key]) for key, value in initial[name].state_dict().items())
-    assert main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, 1, 1, 1) == result
+    assert main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, config) == result
+    saved = {p: sha256(p) for p in tmp_path.rglob('*') if p.is_file() and p != path}
+    for key, value in [('epochs', 3), ('lr', 3e-4), ('batch_size', 4),
+                       ('loss_weights', dict(preset['loss_weights'], rgb=3.))]:
+        changed = deepcopy(preset); changed[key] = value
+        path.write_text(json.dumps(changed))
+        resolved = main.resolve_config(assets['pad'], tmp_path, config_path=path)
+        with pytest.raises(ValueError, match='inputs changed'):
+            main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, resolved)
+        assert all(sha256(p) == digest for p, digest in saved.items())
 
 
 def test_scratch_seed_is_independent_of_ambient_rng_and_matches_calibration(assets, tmp_path):
@@ -429,17 +447,87 @@ def test_initial_checkpoint_recovers_interruption_before_first_update(assets, tm
     assert (Path(config['output'])/'best.pt').is_file()
 
 
-def test_main_cli_requires_only_data_and_output(monkeypatch, tmp_path):
+def test_main_cli_requires_config_and_only_forwards_explicit_overrides(monkeypatch, tmp_path):
     import dual_payload.medical.main_experiment as main
     observed = []
     monkeypatch.setattr(main, 'run_main', lambda *args, **kwargs: observed.append((args, kwargs)) or {})
-    main.main(['--pad-root', '/data/pad', '--pad-metadata', '/data/pad/metadata.csv',
-               '--output', str(tmp_path)])
+    args = ['--pad-root', '/data/pad', '--pad-metadata', '/data/pad/metadata.csv',
+            '--output', str(tmp_path)]
+    with pytest.raises(SystemExit) as exc:
+        main.main(args)
+    assert exc.value.code == 2 and not observed
+    main.main(args + ['--config', str(H100_CONFIG)])
     assert observed[0][0] == ('/data/pad', '/data/pad/metadata.csv', str(tmp_path))
+    assert observed[0][1] == dict(config_path=str(H100_CONFIG), profile_id=None,
+                                  quantization_id=None, micro_batch_size=None)
+    main.main(args + ['--config', str(H100_CONFIG), '--micro-batch-size', '2',
+                     '--profile-id', '3', '--quantization-id', '4'])
+    assert observed[1][1] == dict(config_path=str(H100_CONFIG), profile_id=3,
+                                  quantization_id=4, micro_batch_size=2)
 
 
 def test_checked_in_presets_match_entrypoints():
-    from dual_payload.medical.main_experiment import h100_config
     configs = Path(__file__).resolve().parents[2]/'configs'
-    assert read_json(configs/'medical_h100_80gb_joint.json') == h100_config()
     assert read_json(configs/'medical_train.template.json') == training_template()
+
+
+def test_main_config_paths_and_optional_overrides(tmp_path, monkeypatch):
+    from dual_payload.medical.main_experiment import resolve_config
+    preset = read_json(H100_CONFIG)
+    preset.update(batch_size=6, micro_batch_size=3)
+    preset['contract'].update(profile_id=5, quantization_id=6)
+    path = tmp_path/'custom.json'; path.write_text(json.dumps(preset))
+    monkeypatch.chdir(tmp_path)
+    root = '/data/zwc/zyh/experiments/v3clean-main-run01'
+    config = resolve_config('pad', root, config_path=path)
+    assert config['output'] == root + '/joint'
+    assert config['manifest'] == root + '/manifest.json'
+    assert config['calibration'] == root + '/calibration.json'
+    assert config['roots'] == {'pad': str(tmp_path/'pad')}
+    assert config['batch_size'] == 6 and config['micro_batch_size'] == 3
+    assert config['contract']['profile_id'] == 5 and config['contract']['quantization_id'] == 6
+    overridden = resolve_config('pad', root, config_path=path, micro_batch_size=2,
+                                profile_id=7, quantization_id=8)
+    assert overridden['micro_batch_size'] == 2 and overridden['batch_size'] == 6
+    assert overridden['contract']['profile_id'] == 7 and overridden['contract']['quantization_id'] == 8
+    assert read_json(path) == preset
+    defaults = resolve_config('pad', root, config_path=H100_CONFIG)
+    assert defaults['contract']['profile_id'] == defaults['contract']['quantization_id'] == 1
+
+
+@pytest.mark.parametrize('changes,match', [
+    ({'batch_size': 0}, 'positive integer'),
+    ({'batch_size': 3, 'micro_batch_size': 4}, 'exceeds logical'),
+    ({'micro_batch_size': 0}, 'positive integer'),
+    ({'seed': -1}, 'nonnegative integer'),
+    ({'stage': 'color', 'loss_weights': {'rgb': 1.}}, 'stage=joint'),
+    ({'initialization': {'kind': 'medical', 'path': 'old.pt', 'sha256': '0'*64}}, 'scratch'),
+    ({'initialization': {'kind': 'scratch', 'path': 'old.pt', 'sha256': '0'*64}}, 'must not specify'),
+])
+def test_main_rejects_invalid_json_before_creating_output(tmp_path, changes, match):
+    from dual_payload.medical.main_experiment import run_main
+    preset = read_json(H100_CONFIG); preset.update(changes)
+    path = tmp_path/'invalid.json'; path.write_text(json.dumps(preset))
+    with pytest.raises(ValueError, match=match):
+        run_main('pad', 'metadata.csv', tmp_path/'run', config_path=path)
+    assert not (tmp_path/'run').exists()
+
+
+def test_main_creates_root_and_checks_configured_cuda_device(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import dual_payload.medical.main_experiment as main
+    preset = read_json(H100_CONFIG); preset['device'] = 'cuda:2'
+    path = tmp_path/'input.json'; path.write_text(json.dumps(preset))
+    observed = []
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    def properties(device):
+        observed.append(device)
+        return SimpleNamespace(name='NVIDIA H100', total_memory=80*1024**3)
+    monkeypatch.setattr(torch.cuda, 'get_device_properties', properties)
+    def run_locked(pad, metadata, root, config):
+        assert root.is_dir() and (root/'.main.lock').is_file()
+        assert config['output'] == str(root/'joint')
+        return {'checked': True}
+    monkeypatch.setattr(main, '_run_locked', run_locked)
+    assert main.run_main('pad', 'metadata.csv', tmp_path/'new'/'run', config_path=path) == {'checked': True}
+    assert observed == [torch.device('cuda:2')]
