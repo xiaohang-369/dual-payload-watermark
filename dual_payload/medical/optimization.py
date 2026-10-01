@@ -6,7 +6,7 @@ import torch
 
 
 def options():
-    return {'name': 'adam', 'betas': [0.9, 0.999], 'new_layer_lr': None,
+    return {'name': 'adam', 'betas': [0.9, 0.999],
             'schedule': 'constant', 'warmup_steps': 0, 'minimum_lr': 1e-6}
 
 
@@ -21,13 +21,11 @@ def validate_options(config):
         raise ValueError('Two optimizer betas in [0,1) required')
     if type(settings['warmup_steps']) is not int or settings['warmup_steps'] < 0:
         raise ValueError('warmup_steps must be a nonnegative integer')
-    for key in ('new_layer_lr', 'minimum_lr'):
+    for key in ('minimum_lr',):
         value = settings[key]
-        if key == 'new_layer_lr' and value is None:
-            continue
         if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
             raise ValueError('Positive finite learning rate required: ' + key)
-    if settings['minimum_lr'] > min(config['lr'], settings['new_layer_lr'] or config['lr']):
+    if settings['minimum_lr'] > config['lr']:
         raise ValueError('minimum_lr exceeds a group learning rate')
     if config['image_size'] != [256, 256] or config['precision'] != 'fp32':
         raise ValueError('Medical V1 requires 256x256 FP32 working images')
@@ -35,19 +33,10 @@ def validate_options(config):
         raise ValueError('Unsupported geometric augmentation')
 
 
-def make_optimizer(models, initialization, config):
+def make_optimizer(models, config):
     settings = config['optimization']
-    fresh = set(initialization.get('initialized', []))
-    groups = {'transferred': [], 'new': []}
-    for name, parameter in models.named_parameters():
-        if parameter.requires_grad:
-            groups['new' if name in fresh else 'transferred'].append(parameter)
-    parameters = []
-    for name, values in groups.items():
-        if not values:
-            continue
-        rate = (settings['new_layer_lr'] or config['lr']) if name == 'new' else config['lr']
-        parameters.append({'params': values, 'lr': rate, 'initial_lr': rate, 'group_name': name})
+    parameters = [{'params': [p for p in models.parameters() if p.requires_grad],
+                   'lr': config['lr'], 'initial_lr': config['lr'], 'group_name': 'all'}]
     cls = torch.optim.AdamW if settings['name'] == 'adamw' else torch.optim.Adam
     return cls(parameters, betas=tuple(settings['betas']), weight_decay=config['weight_decay'])
 

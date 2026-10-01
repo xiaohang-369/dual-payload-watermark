@@ -1,4 +1,4 @@
-"""Medical V1 interfaces built from the original Ec and Restormer blocks."""
+"""Medical network interfaces using shared color-residual and Restormer components."""
 
 import hashlib
 import io
@@ -7,8 +7,8 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
-from ..models import (ColorEncoder as OriginalColorEncoder, RestormerUNet,
-                      _blocks, _conv1, _conv3, _initialize_v2)
+from ..models import (ColorResidualEncoder, RestormerUNet,
+                      _blocks, _conv1, _conv3, initialize_layers)
 from ..transforms import BlockDCT, rms_cap, ycbcr_to_rgb
 from .profile import ARCHITECTURE, Profile
 from .protocol import COLOR_INDICES, PATIENT_INDICES
@@ -21,16 +21,14 @@ def _image(x: Tensor):
         raise ValueError("Image tensor contains nonfinite values")
 
 
-class ColorEncoder(OriginalColorEncoder):
+class ColorEncoder(ColorResidualEncoder):
     def __init__(self, color_residual_rms: float):
-        super().__init__(delta_c=color_residual_rms)
+        super().__init__(residual_rms=color_residual_rms)
 
     def forward(self, y, cb, cr):
         for value in (y, cb, cr):
             _image(value)
-        result = super().forward(y, cb, cr)
-        # Public Ew must never consume the old plaintext-residual carrier.
-        return {"candidate": result["candidate"], "residual": result["residual"]}
+        return super().forward(y, cb, cr)
 
 
 class _EmbedBranch(nn.Module):
@@ -56,7 +54,7 @@ class WatermarkEncoder(nn.Module):
         self.host = nn.Sequential(_conv3(64, 64), nn.GELU(), _conv3(64, 64), nn.GELU())
         self.color = _EmbedBranch(236, 128, 39)
         self.patient = _EmbedBranch(2, 64, 9)
-        _initialize_v2(self)
+        initialize_layers(self)
         for branch in (self.color, self.patient):
             nn.init.normal_(branch.head.weight, std=1e-4)
 
@@ -100,7 +98,7 @@ class WatermarkDecoder(nn.Module):
         self.dct = BlockDCT()
         self.color = _ExtractBranch(39, 128, 236)
         self.patient = _ExtractBranch(9, 64, 2)
-        _initialize_v2(self)
+        initialize_layers(self)
 
     def forward(self, gray):
         _image(gray)
@@ -118,7 +116,10 @@ class ColorDecoder(nn.Module):
         self.body = RestormerUNet(layer_norm_bias=True)
         self.chroma_head = _conv3(24, 2)
         self.luma_head = _conv3(24, 1)
-        _initialize_v2(self)
+        initialize_layers(self)
+        # Begin with the received luminance and learn its correction jointly.
+        nn.init.zeros_(self.luma_head.weight)
+        nn.init.zeros_(self.luma_head.bias)
 
     def forward(self, gray, residual):
         _image(gray)
@@ -153,25 +154,3 @@ def load_component(name: str, path: str | Path, profile: Profile, device="cpu") 
     model = build_component(name, profile)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     return model.to(device).eval()
-
-
-def import_v2_color_weights(ec: ColorEncoder, dc: ColorDecoder, v2_state: dict) -> dict:
-    """Explicit warm start only. Caller must verify provenance of the V2 checkpoint.
-
-    Ec retains its exact computation. Dc imports only the recovery trunk and
-    chroma output head; new input semantics and the full-band luma head start fresh.
-    Ew/Dw cannot inherit the original 64-bit transport interface.
-    """
-    report = {"loaded": [], "initialized": []}
-    for name, model, prefix in (("ec", ec, "color_encoder."), ("dc", dc, "color_decoder.")):
-        destination = model.state_dict()
-        for key, value in destination.items():
-            allowed = name == "ec" or key.startswith(("body.", "chroma_head."))
-            source = v2_state.get(prefix + key)
-            if allowed and source is not None and source.shape == value.shape:
-                destination[key] = source
-                report["loaded"].append(name + "." + key)
-            else:
-                report["initialized"].append(name + "." + key)
-        model.load_state_dict(destination, strict=True)
-    return report

@@ -70,14 +70,15 @@ def main(argv=None):
         else:
             torch.set_num_threads(config['threads']); torch.manual_seed(config['seed'])
             if args.command == 'audit-weights':
-                models = make_models(config['rms_limits'])
+                models = make_models(config['rms_limits'], seed=config['seed'])
                 report = initialize_models(models, config['initialization'])
                 result = save_record(args.output, {'schema': 'medical-weight-audit-v1', 'report': report,
                                      'state_sha256': {k: state_digest(v) for k, v in models.items()}})
             else:
                 dataset = MedicalDataset(config['manifest'], config['roots'], 'train')
                 result = calibrate(dataset, config['initialization'], config['rms_limits'], args.output,
-                                   quantile=args.quantile, minimum_rms=args.minimum_rms, device=config['device'])
+                                   quantile=args.quantile, minimum_rms=args.minimum_rms,
+                                   device=config['device'], seed=config['seed'])
     elif args.command == 'export':
         result = export_experiment(args.checkpoint, args.sha256, args.output,
                                    read_json(args.policy), allow_test=args.allow_test, profile_id=args.profile_id)

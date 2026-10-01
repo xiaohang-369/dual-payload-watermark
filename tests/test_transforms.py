@@ -67,3 +67,15 @@ def test_rms_cap_is_per_image_and_preserves_band():
 def test_bad_dct_shapes_are_rejected(shape):
     with pytest.raises(ValueError):
         BlockDCT()(torch.zeros(shape))
+
+
+def test_disjoint_payload_bands_remain_separable():
+    dct = BlockDCT()
+    y = torch.rand(2, 1, 16, 16)
+    dc, dw = dct.project(torch.randn_like(y), 'c'), dct.project(torch.randn_like(y), 'w')
+    x, s = y + dc + dw, y + dc
+    torch.testing.assert_close(x - dct.project(x, 'w'), s - dct.project(s, 'w'),
+                               atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(dct.watermark(x), dct.watermark(y + dw), atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(s - dct.project(s, 'c'), y - dct.project(y, 'c'),
+                               atol=2e-6, rtol=2e-6)

@@ -36,7 +36,10 @@ uv pip install --python .venv/bin/python -e '.[test,medical]'
 
 | 路径 | 用途 |
 | --- | --- |
-| `dual_payload/medical/models.py` | 新四网络接口，复用原 Ec 和 Restormer |
+| `dual_payload/models.py` | 公共 Restormer、归一化、颜色残差编码组件 |
+| `dual_payload/transforms.py` | 公共 DCT、颜色转换和 RMS 幅度限制 |
+| `dual_payload/metrics.py` | 公共 PSNR、SSIM 图像指标 |
+| `dual_payload/medical/models.py` | 医疗四网络接口 |
 | `dual_payload/medical/protocol.py` | 字节、比特、量化、打包 |
 | `dual_payload/medical/crypto.py` | 两路认证加密、持久 nonce 登记 |
 | `dual_payload/medical/profile.py` | 公共配置、交织文件及不可重绑定登记 |
@@ -49,19 +52,19 @@ uv pip install --python .venv/bin/python -e '.[test,medical]'
 | `dual_payload/medical/training.py` | 医疗训练、验证、梯度累积与断点恢复 |
 | `dual_payload/medical/evaluation.py` | 冻结导出与独立进程真实文件评测 |
 | `dual_payload/medical/experiment.py` | 主实验工具命令 |
+| `dual_payload/medical/main_experiment.py` | H100 从零联合训练和自动续跑入口 |
 
 ## 医学主实验
 
 PAD-UFES-20 用于主训练及内部验证/测试，Derm7pt 用于外部评测，临床和皮肤镜图像分别报告。
-[运行说明](docs/medical_experiment.md)提供数据清单、权重核验、校准、H100 短程检查、训练、冻结与评测命令。
+[运行说明](docs/medical_experiment.md)提供数据清单、随机初始化、步长标定、联合训练、冻结与评测命令。
 [训练模板](configs/medical_train.template.json)与最终 Profile 独立；[评价模板](configs/medical_evaluation.template.json)要求测试前填写门槛。
-工具不自动下载数据，也不填入未经核验的训练权重、步长和幅度。
+工具不自动下载数据；主实验从头训练，步长由训练集初始化。
 
 单卡 H100 80 GB 的主实验参数见 `configs/medical_h100_80gb_joint.json`：四网络从第一步一起训练，关闭数据增强。
-`python -m dual_payload.medical.main_experiment --help` 提供主实验启动入口，接入实际数据和原 V2 checkpoint 后完成一次标定并启动联合训练，支持断点恢复。
+`python -m dual_payload.medical.main_experiment --help` 提供主实验启动入口，只需 PAD 数据、metadata.csv 和输出目录，自动完成随机初始化、一次步长标定并启动联合训练，支持断点恢复。无需外部 checkpoint。
 
-## 原 V2 基线
+## 当前入口与版本
 
-`dual_payload/models.py`、`system.py`、`train.py`、`evaluate.py` 和 `diagnose_watermark.py` 保留原 64 bit V2 基线接口。
-`configs/v2_clean_baseline_h100.json` 属于原 DIV2K 基线，不能用于新医疗协议。
-医疗模型使用独立的 `architecture=medical-v1` 标识，严格加载对应权重，使用 `dual_payload.medical.experiment` 的独立训练入口。
+训练使用 `python -m dual_payload.medical.main_experiment`；标定、冻结和评测使用 `python -m dual_payload.medical.experiment`；文件收发使用 `python -m dual_payload.medical.cli`（或安装后的 `medical-share`）。
+医疗模型和文件协议仍使用 `architecture=medical-v1` 标识，V3 为项目分支名。历史基线入口与配置已移除，公共网络、变换和图像指标保留。清理范围见 [交接说明](HANDOFF.md)。

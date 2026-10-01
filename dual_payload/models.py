@@ -1,10 +1,10 @@
-"""Network V2: four fixed-interface Restormer-based payload networks."""
+"""Shared Restormer blocks and color-residual encoder used by medical networks."""
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .transforms import BlockDCT, rms_cap, ycbcr_to_rgb
+from .transforms import BlockDCT, rms_cap
 
 
 def _conv3(in_channels: int, out_channels: int, *, groups: int = 1) -> nn.Conv2d:
@@ -164,7 +164,7 @@ class RestormerUNet(nn.Module):
         return self.refinement(d1)
 
 
-def _initialize_v2(module: nn.Module) -> None:
+def initialize_layers(module: nn.Module) -> None:
     for layer in module.modules():
         if isinstance(layer, (nn.Conv2d, nn.Linear)):
             nn.init.xavier_uniform_(layer.weight)
@@ -185,21 +185,21 @@ def _require_same_spatial(*values: Tensor) -> None:
     if any((value.shape[0], value.shape[-2:]) != reference for value in values[1:]):
         raise ValueError("Image tensors must have matching batch and spatial dimensions")
     if any(size % 8 for size in values[0].shape[-2:]):
-        raise ValueError("Network V2 image height and width must be divisible by 8")
+        raise ValueError("Image height and width must be divisible by 8")
 
 
-class ColorEncoder(nn.Module):
-    def __init__(self, delta_c: float = 2 / 255, eps: float = 1e-8) -> None:
+class ColorResidualEncoder(nn.Module):
+    def __init__(self, residual_rms: float, eps: float = 1e-8) -> None:
         super().__init__()
         self.dct = BlockDCT()
-        self.delta_c, self.eps = delta_c, eps
+        self.residual_rms, self.eps = residual_rms, eps
         self.y_stem = _conv3(1, 8)
         self.chroma_stem = _conv3(2, 16)
         self.stem = _conv3(24, 24)
         self.body = RestormerUNet(layer_norm_bias=True)
         self.head = _conv3(24, 1)
-        _initialize_v2(self)
-        nn.init.zeros_(self.head.weight)
+        initialize_layers(self)
+        nn.init.normal_(self.head.weight, std=1e-4)
         nn.init.zeros_(self.head.bias)
 
     def forward(self, y: Tensor, cb: Tensor, cr: Tensor) -> dict[str, Tensor]:
@@ -208,102 +208,5 @@ class ColorEncoder(nn.Module):
             raise ValueError("Ec expects one-channel Y, Cb and Cr tensors")
         shallow = torch.cat((self.y_stem(y), self.chroma_stem(torch.cat((cb, cr), dim=1))), dim=1)
         candidate = self.head(self.body(self.stem(shallow)))
-        residual = rms_cap(self.dct.project(candidate, "c"), self.delta_c, self.eps)
-        return {"candidate": candidate, "residual": residual, "carrier": y + residual}
-
-
-class WatermarkEncoder(nn.Module):
-    def __init__(self, delta_w: float = 2 / 255, eps: float = 1e-8) -> None:
-        super().__init__()
-        self.dct = BlockDCT()
-        self.delta_w, self.eps = delta_w, eps
-        self.message_branch = nn.Sequential(
-            nn.Linear(64, 256), nn.GELU(), nn.Linear(256, 1024)
-        )
-        self.message_stem = nn.Sequential(_conv3(1, 32), nn.GELU(), _conv3(32, 64))
-        self.image_stem = nn.Sequential(_conv3(64, 64), nn.GELU(), _conv3(64, 64))
-        self.fusion_in = _conv1(128, 64)
-        self.fusion = nn.Sequential(
-            _conv3(64, 64, groups=64), nn.GELU(), _conv1(64, 64)
-        )
-        self.body = _blocks(64, 4, 4, False)
-        self.pre_head = nn.Sequential(_conv3(64, 32), nn.GELU())
-        self.head = _conv1(32, 9)
-        _initialize_v2(self)
-        nn.init.normal_(self.head.weight, mean=0.0, std=1e-4)
-        nn.init.zeros_(self.head.bias)
-
-    def forward(self, s: Tensor, message: Tensor) -> dict[str, Tensor]:
-        if s.ndim != 4 or s.shape[1:] != (1, 256, 256):
-            raise ValueError("Ew requires S with shape B x 1 x 256 x 256")
-        if message.shape != (s.shape[0], 64):
-            raise ValueError("Message must have shape B x 64")
-        if not bool(((message == 0) | (message == 1)).all()):
-            raise ValueError("Messages must contain only 0 and 1")
-        signed_message = 2 * message.to(dtype=s.dtype) - 1
-        message_pattern = self.message_branch(signed_message).reshape(s.shape[0], 1, 32, 32)
-        message_features = self.message_stem(message_pattern)
-        host_coefficients = self.dct(s.detach())
-        host_features = self.image_stem(host_coefficients)
-        fused = self.fusion_in(torch.cat((host_features, message_features), dim=1))
-        fused = fused + self.fusion(fused)
-        features = fused + self.body(fused)
-        coefficients = self.head(self.pre_head(features))
-        dct_residual = torch.zeros_like(host_coefficients).index_copy(
-            1, self.dct.watermark_indices, coefficients
-        )
-        candidate = self.dct.inverse(dct_residual)
-        residual = rms_cap(candidate, self.delta_w, self.eps)
-        return {"candidate": candidate, "coefficients": coefficients,
-                "dct_residual": dct_residual, "residual": residual,
-                "carrier": s + residual}
-
-
-class ColorDecoder(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.dct = BlockDCT()
-        self.structure_stem = _conv3(1, 8)
-        self.chroma_stem = _conv3(1, 16)
-        self.stem = _conv3(24, 24)
-        self.body = RestormerUNet(layer_norm_bias=True)
-        self.chroma_head = _conv3(24, 2)
-        self.luma_head = _conv3(24, 1)
-        _initialize_v2(self)
-
-    def forward(self, x: Tensor) -> dict[str, Tensor]:
-        if x.ndim != 4 or x.shape[1] != 1:
-            raise ValueError("Dc expects a B x 1 x H x W tensor")
-        coefficients = self.dct(x)
-        z0 = self.dct.inverse(coefficients * self.dct.mask_0)
-        zc = self.dct.inverse(coefficients * self.dct.mask_c)
-        z = z0 + zc
-        shallow = torch.cat((self.structure_stem(z0), self.chroma_stem(zc)), dim=1)
-        features = self.body(self.stem(shallow))
-        cb, cr = self.chroma_head(features).split(1, dim=1)
-        raw = self.luma_head(features)
-        correction = self.dct.project(raw, "cw")
-        y = z + correction
-        return {"rgb": ycbcr_to_rgb(y, cb, cr), "y": y, "cb": cb, "cr": cr,
-                "raw_luma_delta": raw, "luma_delta": correction, "z": z, "zc": zc}
-
-
-class WatermarkDecoder(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.dct = BlockDCT()
-        self.stem = nn.Sequential(_conv1(9, 32), nn.GELU(), _conv3(32, 64))
-        self.body = _blocks(64, 4, 4, False)
-        self.pattern_head = nn.Sequential(_conv3(64, 32), nn.GELU(), _conv3(32, 1))
-        self.message_mlp = nn.Sequential(nn.Linear(1024, 256), nn.GELU())
-        self.head = nn.Linear(256, 64)
-        _initialize_v2(self)
-
-    def forward(self, x: Tensor) -> Tensor:
-        if x.ndim != 4 or x.shape[1:] != (1, 256, 256):
-            raise ValueError("Dw requires X with shape B x 1 x 256 x 256")
-        initial = self.stem(self.dct.watermark(x))
-        features = initial + self.body(initial)
-        pattern = self.pattern_head(features)
-        hidden = self.message_mlp(pattern.flatten(start_dim=1))
-        return self.head(hidden)
+        residual = rms_cap(self.dct.project(candidate, "c"), self.residual_rms, self.eps)
+        return {"candidate": candidate, "residual": residual}

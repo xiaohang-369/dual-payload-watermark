@@ -9,11 +9,10 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..transforms import BlockDCT, rgb_to_ycbcr
-from ..system import DualPayloadSystem
 from .artifacts import checked_checkpoint
 from .crypto import NonceStore, encrypt_frame
 from .ldpc import TransportCodec
-from .models import ColorEncoder, ColorDecoder, WatermarkEncoder, WatermarkDecoder, import_v2_color_weights
+from .models import ColorEncoder, ColorDecoder, WatermarkEncoder, WatermarkDecoder
 from .preprocess import ste_gray8
 from .profile import ARCHITECTURE
 from .protocol import Branch, BLOCKS, COLOR_INDICES, pack_color
@@ -35,7 +34,14 @@ def training_layout(seeds):
     return TrainingLayout(permutations, tuple(np.argsort(p) for p in permutations))
 
 
-def make_models(limits):
+def make_models(limits, *, seed=None):
+    if seed is not None:
+        if type(seed) is not int or seed < 0:
+            raise ValueError('Initialization seed must be a nonnegative integer')
+        # Construct on CPU without consuming the caller's training RNG state.
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(seed)
+            return make_models(limits)
     if not isinstance(limits, dict) or set(limits) != {
         'color_residual', 'color_ciphertext', 'patient_ciphertext'
     } or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 < v <= 1
@@ -47,24 +53,30 @@ def make_models(limits):
 
 
 def initialize_models(models, source):
+    validate_initialization(source)
     if source['kind'] == 'scratch':
         if source.get('path') is not None or source.get('sha256') is not None:
             raise ValueError('Scratch initialization must not specify checkpoint material')
         return {'kind': 'scratch', 'loaded': [], 'initialized': list(models.state_dict())}
     checkpoint = checked_checkpoint(source['path'], source['sha256'])
-    if source['kind'] == 'v2':
-        if checkpoint.get('architecture_version') != 'v2':
-            raise ValueError('Expected a verified V2 checkpoint')
-        original = DualPayloadSystem(checkpoint['config']['model'])
-        original.load_state_dict(checkpoint['model'], strict=True)
-        report = import_v2_color_weights(models['ec'], models['dc'], original.state_dict())
-        report['initialized'].extend('ew.' + k for k in models['ew'].state_dict())
-        report['initialized'].extend('dw.' + k for k in models['dw'].state_dict())
-        return dict(report, kind='v2', source_sha256=source['sha256'])
     if source['kind'] != 'medical' or checkpoint.get('architecture') != ARCHITECTURE:
         raise ValueError('Unsupported initialization checkpoint')
     models.load_state_dict(checkpoint['models'], strict=True)
     return {'kind': 'medical', 'source_sha256': source['sha256'], 'loaded': list(models.state_dict())}
+
+
+def validate_initialization(source):
+    if not isinstance(source, dict) or set(source) != {'kind', 'path', 'sha256'}:
+        raise ValueError('Explicit initialization kind/path/SHA-256 required')
+    if source['kind'] not in ('scratch', 'medical'):
+        raise ValueError('Initialization must be scratch or a matching medical checkpoint')
+    if source['kind'] == 'scratch':
+        if source['path'] is not None or source['sha256'] is not None:
+            raise ValueError('Scratch initialization must not specify checkpoint material')
+    elif (not isinstance(source['path'], str) or not source['path'] or
+          not isinstance(source['sha256'], str) or len(source['sha256']) != 64 or
+          any(c not in '0123456789abcdef' for c in source['sha256'])):
+        raise ValueError('Explicit medical checkpoint path and SHA-256 required')
 
 
 def state_digest(module):
@@ -90,7 +102,7 @@ class ResidualQuantizer(nn.Module):
         rounded = torch.round(selected / self.steps)
         integers = rounded.clamp(-8, 7)
         exact = integers * self.steps
-        selected_hat = selected + (exact - selected).detach() if ste else exact
+        selected_hat = exact.detach() + (selected - selected.detach()) if ste else exact
         full = residual.new_zeros(residual.shape[0], 64, 32, 32)
         full[:, list(COLOR_INDICES)] = selected_hat
         return {'residual': self.dct.inverse(full), 'integers': integers.detach(),

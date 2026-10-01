@@ -1,1 +1,1 @@
-"""Medical V1 file protocol. Legacy V2 training remains in dual_payload.system."""
+"""Medical file protocol and joint training of four networks from scratch."""

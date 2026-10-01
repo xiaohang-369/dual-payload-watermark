@@ -36,4 +36,5 @@ def integer_pixels(x: torch.Tensor) -> np.ndarray:
 def ste_gray8(x: torch.Tensor) -> torch.Tensor:
     """Training helper: real gray8 forward, straight-through backward."""
     integer_forward = torch.round(x.clamp(0, 1) * 255) / 255
-    return x + (integer_forward - x).detach()
+    # Avoid cancellation error: forward values must equal the saved PNG pixels.
+    return integer_forward.detach() + (x - x.detach())

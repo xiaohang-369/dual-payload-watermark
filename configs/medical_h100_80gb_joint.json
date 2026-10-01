@@ -17,7 +17,6 @@
       0.9,
       0.999
     ],
-    "new_layer_lr": 0.0001,
     "schedule": "warmup_cosine",
     "warmup_steps": 200,
     "minimum_lr": 1e-06
@@ -28,7 +27,7 @@
   },
   "calibration": null,
   "initialization": {
-    "kind": "v2",
+    "kind": "scratch",
     "path": null,
     "sha256": null
   },
@@ -49,7 +48,7 @@
   "max_steps": 20000,
   "batch_size": 16,
   "micro_batch_size": 4,
-  "lr": 1e-05,
+  "lr": 0.0001,
   "weight_decay": 0.0001,
   "grad_clip": 1.0,
   "save_every": 500,

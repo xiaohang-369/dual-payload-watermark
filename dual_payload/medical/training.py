@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from .artifacts import atomic_checkpoint, checked_checkpoint, code_digest, load_record, save_record, sha256
 from .data import MedicalDataset
 from .learning import (make_models, initialize_models, state_digest, ResidualQuantizer,
-                       PayloadFactory, experiment_forward)
+                       PayloadFactory, experiment_forward, validate_initialization)
 from .profile import ARCHITECTURE, template, validate_config
 from .optimization import options, validate_options, make_optimizer, schedule_step, augment_batch
 
@@ -28,7 +28,7 @@ def training_template():
             'image_size': [256, 256], 'precision': 'fp32', 'augmentation': 'none',
             'optimization': options(),
             'manifest': None, 'roots': {'pad': None}, 'calibration': None,
-            'initialization': {'kind': 'v2', 'path': None, 'sha256': None},
+            'initialization': {'kind': 'scratch', 'path': None, 'sha256': None},
             'contract': {'profile_id': None, 'quantization_id': None,
                          'interleaver_seeds': {'color': 20260930, 'patient': 20260931}},
             'rms_limits': {'color_residual': None, 'color_ciphertext': None, 'patient_ciphertext': None},
@@ -74,8 +74,7 @@ def validate_training(config, allow_test=False):
     candidate.update(config['contract'], purpose=config['purpose'], rms_limits=config['rms_limits'],
                      quantization_steps=[1.0] * 39, weights={k: '0' * 64 for k in ('ec', 'ew', 'dc', 'dw')})
     validate_config(candidate, allow_test=allow_test)  # Validation sentinel only, never registered or saved.
-    if set(config['initialization']) != {'kind', 'path', 'sha256'}:
-        raise ValueError('Explicit initialization kind/path/SHA-256 required')
+    validate_initialization(config['initialization'])
     validate_options(config)
 
 
@@ -134,6 +133,10 @@ def validate_epoch(models, quantizer, payloads, dataset, config):
 def train(config, *, allow_test=False, resume=None, resume_sha256=None, stop_after=None):
     """stop_after bounds a preflight run, while max_steps remains its resume target."""
     validate_training(config, allow_test)
+    if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
+        raise ValueError('stop_after must be a positive integer')
+    if (resume is None) != (resume_sha256 is None):
+        raise ValueError('Resume requires both checkpoint path and SHA-256')
     device = configure_device(config)
     training = MedicalDataset(config['manifest'], config['roots'], 'train')
     validation = MedicalDataset(config['manifest'], config['roots'], 'valid')
@@ -142,7 +145,9 @@ def train(config, *, allow_test=False, resume=None, resume_sha256=None, stop_aft
         raise ValueError('Calibration must belong to this manifest training split')
     if calibration['rms_limits']['color_residual'] != config['rms_limits']['color_residual']:
         raise ValueError('Ec RMS limit differs from calibration')
-    models = make_models(config['rms_limits'])
+    if calibration.get('seed') != config['seed']:
+        raise ValueError('Initialization seed differs from calibration')
+    models = make_models(config['rms_limits'], seed=config['seed'])
     initialization = initialize_models(models, config['initialization'])
     if state_digest(models['ec']) != calibration['ec_state_sha256']:
         raise ValueError('Initial Ec differs from calibrated Ec; recalibrate this initialization')
@@ -151,7 +156,7 @@ def train(config, *, allow_test=False, resume=None, resume_sha256=None, stop_aft
     for name, model in models.items():
         model.requires_grad_(name in active)
     parameters = [p for p in models.parameters() if p.requires_grad]
-    optimizer = make_optimizer(models, initialization, config)
+    optimizer = make_optimizer(models, config)
     total_updates = min(config['max_steps'], config['epochs'] * math.ceil(len(training)/config['batch_size']))
     quantizer = ResidualQuantizer(calibration['steps']).to(device)
     output = Path(config['output']).resolve()
@@ -182,6 +187,19 @@ def train(config, *, allow_test=False, resume=None, resume_sha256=None, stop_aft
                                 'cryptography': version('cryptography'),
                                 'sionna': version('sionna'), 'device': str(device),
                                 'gpu': torch.cuda.get_device_name(device) if device.type == 'cuda' else None}})
+    def checkpoint_state(metrics):
+        return {'schema': 'medical-checkpoint-v1', 'architecture': ARCHITECTURE,
+                'config': copy.deepcopy(config), 'models': models.state_dict(),
+                'code_sha256': code_digest(), 'optimizer': optimizer.state_dict(),
+                'step': step, 'best': best, 'next_epoch': next_epoch, 'next_batch': next_batch,
+                'manifest_sha256': training.manifest['sha256'], 'data_manifest': training.manifest,
+                'calibration_sha256': calibration['sha256'], 'steps': calibration['steps'],
+                'validation': metrics, 'torch_rng': torch.get_rng_state(),
+                'cuda_rng': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
+
+    # Recover even when interrupted before the first validation/save interval.
+    if not resume:
+        atomic_checkpoint(output / 'last.pt', checkpoint_state({}))
     payloads = PayloadFactory(config['contract'], output / 'nonces.sqlite', str(device))
     limit = min(config['max_steps'], step + stop_after) if stop_after is not None else config['max_steps']
     if step >= limit or next_epoch >= config['epochs']:
@@ -222,20 +240,12 @@ def train(config, *, allow_test=False, resume=None, resume_sha256=None, stop_aft
                 _event(output / 'metrics.jsonl', {'kind': 'validation', 'step': step, **metrics})
                 improved = best is None or metrics['total'] < best
                 best = metrics['total'] if improved else best
-                state = {'schema': 'medical-checkpoint-v1', 'architecture': ARCHITECTURE,
-                         'config': copy.deepcopy(config), 'models': models.state_dict(),
-                         'code_sha256': code_digest(),
-                         'optimizer': optimizer.state_dict(), 'step': step, 'best': best,
-                         'next_epoch': epoch + 1 if at_end else epoch,
-                         'next_batch': 0 if at_end else batch_index + 1,
-                         'manifest_sha256': training.manifest['sha256'],
-                         'data_manifest': training.manifest,
-                         'calibration_sha256': calibration['sha256'], 'steps': calibration['steps'],
-                         'validation': metrics, 'torch_rng': torch.get_rng_state(),
-                         'cuda_rng': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
-                atomic_checkpoint(output / 'last.pt', state)
+                state = checkpoint_state(metrics)
+                state.update(next_epoch=epoch + 1 if at_end else epoch,
+                             next_batch=0 if at_end else batch_index + 1)
                 if improved:
                     atomic_checkpoint(output / 'best.pt', state)
+                atomic_checkpoint(output / 'last.pt', state)
             if step >= limit:
                 return {'step': step, 'checkpoint': str(output / 'last.pt'),
                         'sha256': sha256(output / 'last.pt'), 'validation': metrics}

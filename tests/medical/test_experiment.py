@@ -8,8 +8,6 @@ import pytest
 import torch
 from PIL import Image
 
-from dual_payload.config import DEFAULT_CONFIG
-from dual_payload.system import DualPayloadSystem
 from dual_payload.medical.artifacts import load_record, sha256
 from dual_payload.medical.calibration import calibrate
 from dual_payload.medical.data import create_manifest, MedicalDataset, assign_pad_splits, audit_records
@@ -53,14 +51,7 @@ def assets(tmp_path_factory):
     create_manifest(pad, pad / 'metadata.csv', manifest, (0.6, 0.2, 0.2), 2026,
                     derm, derm / 'meta' / 'meta.csv')
     limits = {'color_residual': 2/255, 'color_ciphertext': 2/255, 'patient_ciphertext': 2/255}
-    torch.manual_seed(4)
-    v2 = DualPayloadSystem()
-    with torch.no_grad():
-        v2.color_encoder.head.weight.normal_(0, 0.01)  # Deliberately nonzero synthetic encoder.
-    checkpoint = root / 'synthetic-v2.pt'
-    torch.save({'architecture_version': 'v2', 'config': {'model': DEFAULT_CONFIG['model']},
-                'model': v2.state_dict()}, checkpoint)
-    initialization = {'kind': 'v2', 'path': str(checkpoint), 'sha256': sha256(checkpoint)}
+    initialization = {'kind': 'scratch', 'path': None, 'sha256': None}
     roots = {'pad': str(pad), 'derm7pt': str(derm)}
     training = MedicalDataset(manifest, roots, 'train')
     calibrated = root / 'calibration.json'
@@ -122,12 +113,18 @@ def test_manifest_detects_file_mutation(assets, tmp_path):
         ds[0]
 
 
-def test_calibration_is_train_only_and_rejects_zero_initialization(assets, tmp_path):
+def test_calibration_is_train_only_and_rejects_zero_initialization(assets, tmp_path, monkeypatch):
     validation = MedicalDataset(assets['manifest'], assets['roots'], 'valid')
     with pytest.raises(ValueError, match='training split'):
         calibrate(validation, assets['initialization'], assets['limits'], tmp_path/'bad.json',
                   quantile=0.999, minimum_rms=1e-8)
     training = MedicalDataset(assets['manifest'], assets['roots'], 'train')
+    import dual_payload.medical.calibration as module
+    zero = make_models(assets['limits'], seed=2026)
+    with torch.no_grad():
+        zero['ec'].head.weight.zero_()
+        zero['ec'].head.bias.zero_()
+    monkeypatch.setattr(module, 'make_models', lambda *args, **kwargs: zero)
     with pytest.raises(ValueError, match='degenerate'):
         calibrate(training, {'kind': 'scratch', 'path': None, 'sha256': None}, assets['limits'],
                   tmp_path/'zero.json', quantile=0.999, minimum_rms=1e-8)
@@ -162,8 +159,12 @@ def test_training_config_is_separate_from_final_profile(assets, tmp_path):
         validate_training(wrong, allow_test=True)
     with pytest.raises(ValueError, match='RMS limits'):
         make_models(training_template()['rms_limits'])
-    with pytest.raises(ValueError, match='checkpoint path'):
-        initialize_models(make_models(assets['limits']), training_template()['initialization'])
+    with pytest.raises(ValueError, match='must not specify checkpoint'):
+        initialize_models(make_models(assets['limits']),
+                          {'kind': 'scratch', 'path': 'old.pt', 'sha256': '0'*64})
+    with pytest.raises(ValueError, match='scratch or a matching'):
+        initialize_models(make_models(assets['limits']),
+                          {'kind': 'v2', 'path': 'old.pt', 'sha256': '0'*64})
 
 
 @pytest.fixture(scope='module')
@@ -197,7 +198,7 @@ def test_other_stage_backward_reaches_only_selected_networks(assets, tmp_path, s
     config['stage'] = stage
     config['loss_weights'] = {'rgb': 1.}
     if stage == 'joint': config['loss_weights'].update(color_bits=1., patient_bits=1., gray=1., range=0.1)
-    models = make_models(assets['limits']); initialize_models(models, assets['initialization'])
+    models = make_models(assets['limits'], seed=config['seed']); initialize_models(models, assets['initialization'])
     for name, module in models.items(): module.requires_grad_(name in STAGES[stage])
     quantizer = ResidualQuantizer(load_record(assets['calibration'])['steps'])
     payload = PayloadFactory(config['contract'], tmp_path/'nonce.sqlite', 'cpu')
@@ -308,20 +309,20 @@ def test_h100_optimizer_groups_and_resumable_schedule(assets, tmp_path):
     config['contract'].update(profile_id=1, quantization_id=1)
     validate_training(config)
     models = make_models(assets['limits'])
-    initialized = initialize_models(models, assets['initialization'])
+    initialize_models(models, assets['initialization'])
     for name, model in models.items(): model.requires_grad_(name in ('ec', 'dc'))
-    optimizer = make_optimizer(models, initialized, config)
+    optimizer = make_optimizer(models, config)
     assert isinstance(optimizer, torch.optim.AdamW)
     groups = {g['group_name']: g for g in optimizer.param_groups}
-    assert groups['new']['lr'] == 1e-4 and groups['transferred']['lr'] == 1e-5
-    fresh_ids = {id(p) for p in groups['new']['params']}
-    assert id(models['dc'].gray_stem.weight) in fresh_ids
-    assert id(models['dc'].chroma_head.weight) not in fresh_ids
+    assert set(groups) == {'all'} and groups['all']['lr'] == 1e-4
+    trained_ids = {id(p) for p in groups['all']['params']}
+    assert id(models['dc'].gray_stem.weight) in trained_ids
+    assert id(models['dc'].chroma_head.weight) in trained_ids
     schedule_step(optimizer, config, 199, 1000)
-    assert groups['new']['lr'] == pytest.approx(1e-4)
+    assert groups['all']['lr'] == pytest.approx(1e-4)
     schedule_step(optimizer, config, 500, 1000)
     saved = deepcopy(optimizer.state_dict())
-    resumed = make_optimizer(models, initialized, config); resumed.load_state_dict(saved)
+    resumed = make_optimizer(models, config); resumed.load_state_dict(saved)
     schedule_step(optimizer, config, 501, 1000)
     schedule_step(resumed, config, 501, 1000)
     assert [g['lr'] for g in resumed.param_groups] == [g['lr'] for g in optimizer.param_groups]
@@ -375,19 +376,70 @@ def test_main_joint_run_uses_one_calibration_and_updates_all_networks(assets, tm
         config['optimization']['warmup_steps'] = 0
         return config
     monkeypatch.setattr(main, 'h100_config', small)
-    result = main._run_locked(assets['pad'], assets['pad']/'metadata.csv',
-                              assets['initialization']['path'], assets['initialization']['sha256'],
-                              tmp_path, 1, 1, 1)
+    result = main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, 1, 1, 1)
     assert result['status'] == 'training_complete'
     config = read_json(tmp_path/'train-joint.json')
     assert config['stage'] == 'joint' and config['augmentation'] == 'none'
+    assert config['initialization'] == {'kind': 'scratch', 'path': None, 'sha256': None}
+    assert config['lr'] == 1e-4 and 'new_layer_lr' not in config['optimization']
     assert len(list(tmp_path.glob('calibration*.json'))) == 1
     assert not list(tmp_path.glob('stage-*'))
     torch.manual_seed(config['seed'])
-    initial = make_models(config['rms_limits']); initialize_models(initial, config['initialization'])
+    initial = make_models(config['rms_limits'], seed=config['seed']); initialize_models(initial, config['initialization'])
     trained = torch.load(tmp_path/'joint'/'last.pt', weights_only=True)['models']
     for name in ('ec', 'ew', 'dc', 'dw'):
         assert any(not torch.equal(value, trained[name+'.'+key]) for key, value in initial[name].state_dict().items())
-    assert main._run_locked(assets['pad'], assets['pad']/'metadata.csv',
-                            assets['initialization']['path'], assets['initialization']['sha256'],
-                            tmp_path, 1, 1, 1) == result
+    assert main._run_locked(assets['pad'], assets['pad']/'metadata.csv', tmp_path, 1, 1, 1) == result
+
+
+def test_scratch_seed_is_independent_of_ambient_rng_and_matches_calibration(assets, tmp_path):
+    torch.manual_seed(8)
+    before = torch.get_rng_state().clone()
+    first = make_models(assets['limits'], seed=2026)
+    assert torch.equal(torch.get_rng_state(), before)
+    torch.rand(100)
+    second = make_models(assets['limits'], seed=2026)
+    for name in first:
+        assert state_digest(first[name]) == state_digest(second[name])
+    assert state_digest(first['ec']) == load_record(assets['calibration'])['ec_state_sha256']
+    assert state_digest(make_models(assets['limits'], seed=2027)['ec']) != state_digest(first['ec'])
+    wrong = config_for(assets, tmp_path/'wrong-seed'); wrong['seed'] += 1
+    with pytest.raises(ValueError, match='seed differs'):
+        train(wrong, allow_test=True)
+    assert not Path(wrong['output']).exists()
+
+
+def test_initial_checkpoint_recovers_interruption_before_first_update(assets, tmp_path, monkeypatch):
+    import dual_payload.medical.training as module
+    config = config_for(assets, tmp_path/'interrupted')
+    config.update(stage='joint', max_steps=1,
+                  loss_weights={'rgb': 1., 'color_bits': 1., 'patient_bits': 1., 'gray': 1., 'range': .1})
+    original_forward = module.experiment_forward
+    def interrupted(*args, **kwargs):
+        raise RuntimeError('simulated interruption')
+    monkeypatch.setattr(module, 'experiment_forward', interrupted)
+    with pytest.raises(RuntimeError, match='simulated interruption'):
+        train(config, allow_test=True)
+    checkpoint = Path(config['output'])/'last.pt'
+    state = torch.load(checkpoint, weights_only=True)
+    assert state['step'] == 0 and state['best'] is None and not state['optimizer']['state']
+    monkeypatch.setattr(module, 'experiment_forward', original_forward)
+    result = train(config, allow_test=True, resume=str(checkpoint), resume_sha256=sha256(checkpoint))
+    assert result['step'] == 1
+    assert (Path(config['output'])/'best.pt').is_file()
+
+
+def test_main_cli_requires_only_data_and_output(monkeypatch, tmp_path):
+    import dual_payload.medical.main_experiment as main
+    observed = []
+    monkeypatch.setattr(main, 'run_main', lambda *args, **kwargs: observed.append((args, kwargs)) or {})
+    main.main(['--pad-root', '/data/pad', '--pad-metadata', '/data/pad/metadata.csv',
+               '--output', str(tmp_path)])
+    assert observed[0][0] == ('/data/pad', '/data/pad/metadata.csv', str(tmp_path))
+
+
+def test_checked_in_presets_match_entrypoints():
+    from dual_payload.medical.main_experiment import h100_config
+    configs = Path(__file__).resolve().parents[2]/'configs'
+    assert read_json(configs/'medical_h100_80gb_joint.json') == h100_config()
+    assert read_json(configs/'medical_train.template.json') == training_template()

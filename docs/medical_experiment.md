@@ -1,6 +1,6 @@
 # 医学主实验运行说明
 
-当前代码支持：数据清单 → 原权重核验 → 训练集量化标定 → 医疗训练 → 冻结权重和 Profile → 真实 PNG 文件评测。
+当前代码支持：数据清单 → 随机初始化 → 训练集量化步长初始化 → 四网络联合训练 → 冻结权重和 Profile → 真实 PNG 文件评测。
 本机检查使用合成图片和测试参数；没有运行医学主训练或 H100 检查，没有医学恢复质量结论。
 协议、网络接口及 PNG 格式见 [medical_v1.md](medical_v1.md)。
 
@@ -34,16 +34,16 @@ python -m dual_payload.medical.experiment manifest \
 
 如 Derm7pt 尚未到位，可以暂时省略两个 `--derm-*` 参数，先准备 PAD。之后新增含 Derm7pt 的清单时保持原 PAD 图片、元数据、比例和 seed；外部评测会检查 PAD 记录及划分完全一致。内部测试仍使用训练时冻结的原清单。
 
-## 2. 训练配置和原权重核验
+## 2. 从头训练的配置与初始化
 
 复制 [medical_train.template.json](../configs/medical_train.template.json) 到实验目录后填写：
 
 - `manifest`、`roots.pad`，以及需要时的 `roots.derm7pt`。
 - 三个独立 `rms_limits`，取值必须显式给定且在 `(0,1]`。
-- `initialization`：首次通常为 `kind=v2`，填写原 checkpoint 路径及核验后的 SHA-256。后续阶段使用 `kind=medical` 和上一阶段 checkpoint。
+- `initialization`：主实验固定为 `{"kind":"scratch","path":null,"sha256":null}`，不需要已有权重。`seed=2026` 控制四网络随机初始化。
 - `calibration` 指向下一步生成的校准记录。
 - `contract` 中的 Profile ID、量化 ID、固定交织 seed。训练配置没有最终权重摘要要求。
-- `stage`、`epochs`、`max_steps`、逻辑 `batch_size`、`micro_batch_size`、`lr`、`save_every`、阶段损失权重及新 `output` 目录。
+- `stage`、`epochs`、`max_steps`、逻辑 `batch_size`、`micro_batch_size`、`lr`、`save_every`、损失权重及新 `output` 目录。
 
 模板的 `null` 和空损失配置不能直接启动训练。模板中的 seed、线程数等是可修改的起始设置，不代表已经验证的正式训练参数。
 
@@ -53,7 +53,7 @@ python -m dual_payload.medical.experiment audit-weights \
   --output /absolute/experiment/weight-audit.json
 ```
 
-V2 核验要求 checkpoint 含 `architecture_version=v2`、`config.model` 和完整 `model` 状态，先严格加载原网络，再迁移 Ec 和可兼容的 Dc 部分，记录逐层结果。新 Ew/Dw、Dc 输入层和亮度修正头重新初始化。摘要只能确认文件身份；原实验训练记录及数据来源仍需单独核验。
+上面的可选审计命令记录初始网络摘要，不加载外部权重。Ec 残差头和 Ew 两路嵌入头使用标准差 `1e-4` 的小幅随机初始化；Dc 亮度修正头权重和偏置为零；其余卷积使用 Xavier 初始化。四网络使用同一 seed 重建，标定与训练不依赖调用前的随机数状态。
 
 ## 3. 仅用训练集标定 39 个步长
 
@@ -68,7 +68,7 @@ python -m dual_payload.medical.experiment calibrate \
 分位数和退化判定阈值必须显式给定。使用磁盘临时数组存放系数；验证和测试图片不会进入标定。
 零初始化 Ec、非有限系数或没有有效范围的频率会被拒绝，不以任意常数替代步长。
 
-训练会检查初始 Ec、Ec 幅度和校准记录匹配。阶段切换后若 Ec 改变，需要针对新的初始化重新标定；续跑同一训练阶段保持原步长不变。
+这一步统计的是随机初始化 Ec 的数值范围，用于设置起始量化尺度，不代表已经学到有效的颜色编码。训练检查初始 Ec、seed、Ec 幅度和标定记录一致；39 个步长全程固定，持续记录截断比例和量化误差。更换初始化或 seed 时使用新的实验目录重新标定；续跑保持原步长不变。
 
 ## 4. H100 联合训练主实验
 
@@ -76,11 +76,11 @@ python -m dual_payload.medical.experiment calibrate \
 
 主实验配置为 `configs/medical_h100_80gb_joint.json`，`stage=joint`。Ec/Ew/Dc/Dw 从第一步同时更新，不冻结网络，不做阶段切换。
 共同设置为 256×256、FP32、有效 batch 16、micro-batch 4、AdamW、权重衰减 `1e-4`、梯度裁剪 1。按用户最新要求关闭数据增强，训练集只做固定的等比缩放和补边。
-原 Ec 和颜色嵌入 RMS 为 `2/255`，患者嵌入 RMS 为 `1/255`；实际原 checkpoint 的 Ec 幅度必须匹配。
+Ec 残差和颜色嵌入 RMS 上限为 `2/255`，患者嵌入 RMS 上限为 `1/255`。
 
 | 模式 | 更新网络 | 学习率 | 上限 |
 | --- | --- | --- | --- |
-| joint | Ec、Ew、Dc、Dw | 已迁移层 `1e-5`，新增层 `1e-4` | 120 轮或 20,000 次更新 |
+| joint | Ec、Ew、Dc、Dw | 全部参数统一 `1e-4` | 120 轮或 20,000 次更新 |
 
 学习率按整个训练的更新总数计算：先预热 200 次更新，再余弦下降到 `1e-6`，预热期间四网络仍同时训练。
 轮数和更新次数任一达到上限即结束。总损失包含 RGB L1 权重 1、两路 BCE 各 1、灰度 MSE 1000、越界 MSE 1000。
@@ -92,18 +92,16 @@ python -m dual_payload.medical.experiment calibrate \
 python -u -m dual_payload.medical.main_experiment \
   --pad-root /absolute/data/PAD-UFES-20 \
   --pad-metadata /absolute/data/PAD-UFES-20/metadata.csv \
-  --checkpoint /absolute/checkpoints/original-v2.pt \
-  --sha256 VERIFIED_ORIGINAL_CHECKPOINT_SHA256 \
   --output /absolute/experiments/medical-main-01
 ```
 
 程序要求可用的完整 H100 80 GB，拒绝本机 CPU 和显存不足的 MIG 分区；按患者合并组 70/15/15、seed 2026 创建 PAD 清单。
-先核验原 V2 文件摘要和 Ec 幅度，再用训练集标定一次步长（绝对系数分位数 0.999，退化 RMS 阈值 `1e-6`）。随后直接进入一轮完整联合训练；步长保持固定，Ec 继续学习适应该量化配置，并记录裁剪比例。
+先按 seed 随机初始化四网络，再用训练集初始化一次步长（绝对系数分位数 0.999，退化 RMS 阈值 `1e-6`）。随后直接进入一轮完整联合训练；步长保持固定，Ec 继续学习适应该量化配置，并记录裁剪比例。
 每轮和每 500 次更新进行网络验证；当前最佳权重按验证总损失选择。日志包含各参数组学习率和 CUDA 峰值 allocated/reserved 字节数。正式业务成功率由第 6 节的独立文件评测确认。
 
 中断后使用同一命令恢复；保留整个输出目录。训练权重保存在 `joint/`，配置为 `train-joint.json`；已完成训练通过带摘要的完成记录识别，未完成训练恢复 `joint/last.pt`。并发运行同一目录会被文件锁拒绝。
 若要用 micro-batch 2，初次启动时加 `--micro-batch-size 2`，有效 batch 仍为 16。已启动目录的配置不得静默修改；出现显存不足时保留该目录，在新目录中明确调整配置。
-模板中只保留真实路径、初始化文件摘要和公共 ID 的空位；启动器会填入这些字段。Profile ID/量化 ID 默认 1，可以通过命令参数指定，最终发布仍遵守不可重绑定规则。
+模板中保留数据、标定和输出路径及公共 ID 的空位；启动器会填入这些字段。`initialization.path` 和 `initialization.sha256` 必须保持 `null`。Profile ID/量化 ID 默认 1，可以通过命令参数指定，最终发布仍遵守不可重绑定规则。
 
 ### 训练内部计算
 
@@ -113,7 +111,7 @@ python -u -m dual_payload.medical.main_experiment \
 两路 BCE/BER 排除 512 bit 布局填充；内容损失统计有效区域，越界损失统计整张图。
 
 每张训练样本生成随机 16 B 测试 Token、图像 ID 和临时业务密钥，使用共同 nonce 登记接口完成真实加密。Token 用来验证完整传输，不代表恢复了真实患者身份或临床关联表。
-验证密文帧按样本、配置及量化明文缓存于 `validation_frames/`；相同输入复用缓存，Ec 更新导致量化明文变化时生成新项。因此改变 Ec 的阶段需预留缓存空间。
+验证密文帧按样本、配置及量化明文缓存于 `validation_frames/`；相同输入复用缓存，Ec 更新导致量化明文变化时生成新项。联合训练期间需预留缓存空间。
 
 在 H100 环境安装 `.[test,medical]` 后，也可直接使用准备好的联合配置启动训练：
 
@@ -130,10 +128,10 @@ python -m dual_payload.medical.experiment train \
   --resume /absolute/runs/main/last.pt --resume-sha256 VERIFIED_CHECKPOINT_SHA256
 ```
 
-命令结果返回 checkpoint 摘要。`run.json` 保存配置、数据/校准/代码摘要和设备依赖版本；`metrics.jsonl` 保存训练与验证指标；`last.pt` 保存优化器、游标和 Torch RNG，`best.pt` 按验证总损失选择。
+命令结果返回 checkpoint 摘要。`run.json` 保存配置、数据/校准/代码摘要和设备依赖版本；`metrics.jsonl` 保存训练与验证指标；`last.pt` 在首次更新前就保存 step 0，之后保存优化器、游标和 Torch RNG，`best.pt` 按验证总损失选择。
 恢复要求原输出目录、相同配置/代码/数据/校准记录。保留 nonce 数据库和验证缓存。训练密文继续使用操作系统随机源，因此断点恢复不承诺与未中断训练逐比特相同。
-修改配置或切换阶段时创建新目录，用 `initialization.kind=medical` 加载已核验的前阶段权重。
-当前实现为单设备 FP32，支持 Adam/AdamW、按初始化来源划分学习率、预热和余弦调度、微批次梯度累积；尚未在 H100 上实测吞吐或显存。`augmentation=dihedral` 开启几何增强，`none` 关闭；通用模板默认关闭。
+修改配置时创建新目录。通用工具可显式加载同结构医疗 checkpoint 开始另一轮训练；主实验入口始终从头初始化，续跑只读取本次实验目录中的检查点。
+当前实现为单设备 FP32，支持 Adam/AdamW、统一学习率、预热和余弦调度、微批次梯度累积；尚未在 H100 上实测吞吐或显存。`augmentation=dihedral` 开启几何增强，`none` 关闭；通用模板默认关闭。
 
 ## 5. 冻结模型、Profile 和评价口径
 

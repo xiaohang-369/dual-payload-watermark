@@ -12,12 +12,12 @@ from .protocol import COLOR_INDICES
 
 
 @torch.no_grad()
-def calibrate(dataset, initialization, limits, output, *, quantile, minimum_rms, device='cpu'):
+def calibrate(dataset, initialization, limits, output, *, quantile, minimum_rms, device='cpu', seed=2026):
     if dataset.split != 'train':
         raise ValueError('Quantization calibration is restricted to the training split')
     if not 0 < quantile < 1 or not np.isfinite(minimum_rms) or minimum_rms <= 0:
         raise ValueError('Explicit quantile in (0,1) and positive minimum_rms required')
-    models = make_models(limits)
+    models = make_models(limits, seed=seed)
     report = initialize_models(models, initialization)
     ec = models['ec'].to(device).eval()
     dct = BlockDCT().to(device)
@@ -34,9 +34,9 @@ def calibrate(dataset, initialization, limits, output, *, quantile, minimum_rms,
             coefficients[index * 1024:(index+1) * 1024] = selected.cpu().numpy()
         rms = (rms_sum / count) ** 0.5
         if not np.isfinite(coefficients).all() or rms <= minimum_rms:
-            raise ValueError('Ec residual is nonfinite or degenerate; verify pretrained weights before calibration')
+            raise ValueError('Ec residual is nonfinite or degenerate; check initialization before calibration')
         coverage = np.array([np.quantile(np.abs(coefficients[:, i]), quantile) for i in range(39)])
-        steps = coverage / 7.0  # Conservative positive endpoint; negative endpoint remains -8.
+        steps = (coverage / 7.0).astype(np.float32)  # Same precision as training and receiver.
         if not np.isfinite(steps).all() or np.any(steps <= 0):
             raise ValueError('At least one frequency has no usable range; calibration not frozen')
         clipped, squared_error = 0, 0.0
@@ -50,7 +50,7 @@ def calibrate(dataset, initialization, limits, output, *, quantile, minimum_rms,
         del coefficients
     return save_record(output, {'schema': 'medical-calibration-v1', 'split': 'train',
                                'manifest_sha256': dataset.manifest['sha256'],
-                               'ec_state_sha256': state_digest(ec), 'initialization': report,
+                               'ec_state_sha256': state_digest(ec), 'initialization': report, 'seed': seed,
                                'rms_limits': limits, 'quantile': quantile, 'minimum_rms': minimum_rms,
                                'images': count, 'residual_rms': rms, 'steps': steps.tolist(),
                                'clipped_fraction': clipped / size, 'coefficient_mse': squared_error / size})

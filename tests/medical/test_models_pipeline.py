@@ -18,14 +18,13 @@ from torch import nn
 from dual_payload.medical.crypto import NonceStore, encrypt_frame
 from dual_payload.medical.ldpc import TransportCodec
 from dual_payload.medical.models import (ColorDecoder, ColorEncoder, WatermarkDecoder,
-                                         WatermarkEncoder, build_component, import_v2_color_weights,
+                                         WatermarkEncoder, build_component,
                                          load_component)
 from dual_payload.medical.pipeline import Receiver, Sender
 from dual_payload.medical.png import hospital_key_id, save_signed_png
 from dual_payload.medical.preprocess import integer_pixels, prepare_work_image, ste_gray8
 from dual_payload.medical.profile import ARCHITECTURE, load_profile, register_profile
 from dual_payload.medical.protocol import Branch, dequantize_residual, pack_color
-from dual_payload.system import DualPayloadSystem
 from dual_payload.transforms import BlockDCT, rgb_to_ycbcr
 
 
@@ -66,17 +65,15 @@ def test_four_network_shapes_bands_dual_input_and_gradients(profile):
         assert torch.equal(dw(gray)["patient_logits"], torch.full_like(mbits, -3))
 
 
-def test_v2_weight_transfer_is_explicit_and_leaves_new_interfaces_initialized(profile):
-    old = DualPayloadSystem()
+def test_scratch_initialization_has_nonzero_residual_and_zero_luma_correction(profile):
     ec, dc = build_component("ec", profile), build_component("dc", profile)
-    before = dc.gray_stem.weight.detach().clone()
-    report = import_v2_color_weights(ec, dc, old.state_dict())
-    assert "ec.head.weight" in report["loaded"]
-    assert "dc.chroma_head.weight" in report["loaded"]
-    assert "dc.gray_stem.weight" in report["initialized"]
-    assert "dc.luma_head.weight" in report["initialized"]
-    assert torch.equal(dc.gray_stem.weight, before)
-    assert torch.equal(ec.head.weight, old.color_encoder.head.weight)
+    with torch.no_grad():
+        gray = torch.rand(1, 1, 256, 256)
+        residual = ec(*rgb_to_ycbcr(torch.rand(1, 3, 256, 256)))['residual']
+        assert torch.isfinite(residual).all() and residual.abs().sum() > 0
+        recovered = dc(gray, residual)
+        assert torch.count_nonzero(recovered['luma_delta']) == 0
+        assert torch.equal(recovered['y'], gray)
 
 
 def test_preprocess_preserves_whole_image_and_integer_rounding(tmp_path):
@@ -233,3 +230,12 @@ def test_real_sender_and_separate_receiver_process_have_no_private_sender_depend
     assert result["patient"]["status"] in ("DECODE_FAILED", "DECRYPT_FAILED")
     assert not (receiver_only / "result" / "patient.token").exists()
     assert not (receiver_only / "result" / "rgb.png").exists()
+
+
+def test_gray8_ste_is_exact_and_has_finite_identity_gradient():
+    x = (torch.randn(3, 1, 256, 256) * 2).requires_grad_()
+    result = ste_gray8(x)
+    expected = torch.round(x.detach().clamp(0, 1) * 255) / 255
+    assert torch.equal(result, expected)
+    result.sum().backward()
+    assert torch.equal(x.grad, torch.ones_like(x))
