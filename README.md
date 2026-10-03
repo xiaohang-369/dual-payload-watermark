@@ -60,6 +60,22 @@ python -m venv .venv
 
 显式 `--smoke --max-steps 1` 使用合成数据做工程自测。没有 `--smoke` 时，数据缺失直接报错。
 
+### Epoch 历史与 overfit8 工程检查
+
+每次 epoch 的 validation 完成后，输出目录追加一行 `metrics.jsonl` 并立即 flush/fsync。字段固定为：
+
+- `epoch`：与 checkpoint 一致的 **0-based** 编号；`global_step`：累计 optimizer step 数。
+- `train_samples`：该轮实际训练的样本次数；`train_loss`：`rgb/chroma/luma/message/carrier/range/total`，按 batch 样本数加权平均。
+- `validation`：原样保存 `validate()` 返回的全部指标和 validation loss；`mode`：`joint_256` 或 `overfit8`。
+
+每行 UTF-8 JSON 使用 `ensure_ascii=False`、`allow_nan=False`。若 `--max-steps` 提前结束当轮，沿用现有验证和 checkpoint 边界，历史只统计已执行的训练样本。`validation.json` 仍每轮覆盖，last/best 保存条件及 stdout step 日志保持不变；输出目录仍必须新建或为空，不支持 resume。
+
+显式 `--overfit8` 从配置的 `train_manifest` 中选择 8 行：`sorted(random.Random(config["seed"]).sample(range(N), 8))`，少于 8 行报错。`overfit8_selection.json` 记录 seed、原 manifest 和选中行的 0-based 原始索引、原 path，以及存在时的 patient_id/img_id；path 相对于原 manifest。
+
+overfit8 通过 `Subset(ManifestDataset(training=False, seed=config["seed"]), indices)` 保留原行索引：复用 `fixed_message(原行索引, seed)`，原 manifest 若已有显式 message 则沿用它。训练和 validation 共享相同 8 个固定 image-message pair，跨读取、重建和 epoch 稳定。仅此模式允许二者重合；与 `--smoke` 互斥。
+
+所有训练 checkpoint 新增 `overfit8: true/false`，核心 schema 与加载接口不变。正常训练仍使用 `ManifestDataset(training=True)` 每次随机产生 message，train/val 隔离检查不变。overfit8 是工程 sanity check，不能把它的 checkpoint 或拟合结果当作正式研究结果。本轮只用临时合成图片测试了此入口，未启动真实 overfit 训练。
+
 protocol_eval 命令模板（先填写合法协议参数）：
 
 ```bash

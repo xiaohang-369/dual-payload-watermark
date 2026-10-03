@@ -94,6 +94,7 @@ def test_joint_rejects_init_from_before_creating_model(tmp_path,capsys):
 def test_joint_optimizer_and_one_backward_updates_without_protocol():
     c=config_for('joint_256');model=DualPayloadSystem(c['model'],c['channel'])
     optimizer=build_optimizer(model,c)
+    assert type(optimizer) is torch.optim.Adam
     assert not optimizer.state
     assert c['train']['key_transform'] is False
     expected=[]
@@ -118,10 +119,11 @@ def test_joint_optimizer_and_one_backward_updates_without_protocol():
             stack.enter_context(patch(target,side_effect=AssertionError('protocol entered training')))
         stack.enter_context(patch('torch.autograd.backward',side_effect=count))
         loss_call=stack.enter_context(patch.object(CleanLoss,'forward',autospec=True,side_effect=CleanLoss.forward))
+        forward=stack.enter_context(patch.object(model,'forward',wraps=model.forward))
         step=stack.enter_context(patch.object(optimizer,'step',wraps=optimizer.step))
         losses=train_step(model,{'rgb':torch.rand(1,3,256,256),'message':torch.randint(0,2,(1,256)).float()},
                           c,optimizer,CleanLoss(c['loss']),torch.device('cpu'))
-    assert len(calls)==loss_call.call_count==step.call_count==1 and losses['total']>0
+    assert len(calls)==forward.call_count==loss_call.call_count==step.call_count==1 and losses['total']>0
     for i,head in enumerate(heads):
         assert not torch.equal(before[i],head.weight)
     # Resume train mode after ordinary validation, with all four networks enabled.
@@ -244,6 +246,14 @@ def test_cli_synthetic_training_and_protocol_eval(tmp_path):
     state=load_checkpoint(run/'last.pt')
     assert state['global_step']==1 and state['synthetic'] and state['config']['model']['message_bits']==256
     assert state['epoch']==0 and state['config']['train']['stage']=='joint_256'
+    assert state['overfit8'] is False
+    history=(run/'metrics.jsonl').read_text().splitlines()
+    assert len(history)==1
+    epoch_metrics=json.loads(history[0])
+    assert epoch_metrics['epoch']==state['epoch'] and epoch_metrics['global_step']==1
+    assert epoch_metrics['train_samples']==1 and epoch_metrics['mode']=='joint_256'
+    assert set(epoch_metrics['train_loss'])=={'rgb','chroma','luma','message','carrier','range','total'}
+    assert epoch_metrics['validation']==state['validation']==json.loads((run/'validation.json').read_text())
     assert all(v['step'].item()==1 for v in state['optimizer']['state'].values())
     ec=config_for('protocol_eval');evalpath=tmp_path/'eval.json';evalpath.write_text(json.dumps(ec))
     args=['--config',str(evalpath),'--checkpoint',str(run/'last.pt'),'--smoke','--device','cpu',

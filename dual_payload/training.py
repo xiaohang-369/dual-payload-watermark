@@ -2,11 +2,12 @@
 import argparse
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import random
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .checkpoints import save_checkpoint
@@ -44,6 +45,30 @@ def resolve_device(value):
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
+
+def append_jsonl(path, value):
+    # Serialize before opening so invalid numbers cannot leave a partial JSON line.
+    line = json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n"
+    with Path(path).open("a", encoding="utf-8") as stream:
+        stream.write(line)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def make_overfit8_dataset(manifest, seed):
+    if not manifest:
+        raise ValueError("--overfit8 requires a prepared train_manifest")
+    dataset = ManifestDataset(manifest, training=False, seed=seed)
+    if len(dataset) < 8:
+        raise ValueError("--overfit8 requires at least 8 manifest samples")
+    indices = sorted(random.Random(seed).sample(range(len(dataset)), 8))
+    # Subset preserves original row indices for ManifestDataset.fixed_message.
+    selection = {"seed": seed, "manifest": str(dataset.manifest), "samples": [
+        {"original_manifest_row_index": index, "path": dataset.rows[index]["path"],
+         **{key: dataset.rows[index][key] for key in ("patient_id", "img_id") if key in dataset.rows[index]}}
+        for index in indices]}
+    return Subset(dataset, indices), selection
 
 
 def make_loader(dataset, config, training=False, epoch=0):
@@ -89,7 +114,9 @@ def train_step(model, batch, config, optimizer, criterion, device):
 def train_main(argv=None):
     parser = argparse.ArgumentParser(description="Medical V3 joint_256 training from scratch")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--smoke", action="store_true", help="Explicit synthetic data only")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--smoke", action="store_true", help="Explicit synthetic data only")
+    mode.add_argument("--overfit8", action="store_true", help="Fit 8 fixed prepared image-message pairs; engineering sanity check only")
     parser.add_argument("--device")
     parser.add_argument("--output-dir")
     parser.add_argument("--max-steps", type=int)
@@ -113,6 +140,9 @@ def train_main(argv=None):
     if args.smoke:
         train_data = SyntheticDataset(2, seed=config["seed"], training=True)
         val_data = SyntheticDataset(1, seed=config["seed"] + 10000)
+    elif args.overfit8:
+        train_data, selection = make_overfit8_dataset(config["data"]["train_manifest"], config["seed"])
+        val_data = train_data  # Same fixed pairs only in this explicit sanity-check mode.
     else:
         paths = (config["data"]["train_manifest"], config["data"]["val_manifest"])
         if not all(paths):
@@ -131,10 +161,17 @@ def train_main(argv=None):
     criterion = CleanLoss(config["loss"])
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "config.json", config)
+    if args.overfit8:
+        write_json(output_dir / "overfit8_selection.json", selection)
     global_step, best_ber, best_loss = 0, float("inf"), float("inf")
     for epoch in range(config["train"]["epochs"]):
+        train_totals, train_samples = {}, 0
         for batch in make_loader(train_data, config, training=True, epoch=epoch):
             losses = train_step(model, batch, config, optimizer, criterion, device)
+            batch_size = batch["rgb"].shape[0]
+            for key, value in losses.items():
+                train_totals[key] = train_totals.get(key, 0.) + value * batch_size
+            train_samples += batch_size
             global_step += 1
             if global_step == 1 or global_step % config["train"]["log_every"] == 0:
                 print(json.dumps({"stage": config["train"]["stage"], "step": global_step, "loss": losses}), flush=True)
@@ -142,7 +179,8 @@ def train_main(argv=None):
                 break
         metrics = validate(model, val_data, config, device, criterion)
         state = {"optimizer": optimizer.state_dict(), "global_step": global_step,
-                 "epoch": epoch, "validation": metrics, "synthetic": args.smoke}
+                 "epoch": epoch, "validation": metrics, "synthetic": args.smoke,
+                 "overfit8": args.overfit8}
         save_checkpoint(output_dir / "last.pt", model, deepcopy(config), **state)
         if metrics["ber"] < best_ber:
             save_checkpoint(output_dir / "best_message_ber.pt", model, deepcopy(config), **state)
@@ -151,6 +189,10 @@ def train_main(argv=None):
             save_checkpoint(output_dir / "best.pt", model, deepcopy(config), **state)
             best_loss = metrics["loss_total"]
         write_json(output_dir / "validation.json", metrics)
+        append_jsonl(output_dir / "metrics.jsonl", {
+            "epoch": epoch, "global_step": global_step, "train_samples": train_samples,
+            "train_loss": {key: total / train_samples for key, total in train_totals.items()},
+            "validation": metrics, "mode": "overfit8" if args.overfit8 else "joint_256"})
         if config["train"]["max_steps"] is not None and global_step >= config["train"]["max_steps"]:
             break
     print(json.dumps({"output_dir": str(output_dir), "steps": global_step, "synthetic": args.smoke}), flush=True)
