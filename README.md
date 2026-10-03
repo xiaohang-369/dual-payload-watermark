@@ -97,7 +97,15 @@ manifest 示例：
 
 路径相对于 manifest。图片必须已经是 **RGB 256×256**，读取只将 8-bit RGB 转为 `[0,1]` FP32。拒绝其他尺寸/模式；没有 resize/crop/padding/增强或 EXIF 自动旋转。训练每次产生随机 256-bit；验证可在每条样本提供 `message` 数组（恰好 256 个 0/1），否则按 seed 与行号固定生成。
 
-训练/验证文件重叠会报错；若提供 patient_id，也拒绝已有 ID 重叠。该检查不构成 patient-level split 的设计或完整性证明。PAD-UFES-20 split、病灶保留预处理与增强方案仍待确定。
+训练/验证文件重叠会报错；若提供 patient_id，也拒绝已有 ID 重叠。完整的数据准备与分组验收由独立工具负责，见 [数据工具说明](tools/README.md)。
+
+### PAD-UFES-20 prepared v1
+
+用户已冻结数据准备规则：RGB 原通道；RGBA 必须 alpha 全 255 后去 A；256×256 不 resize，两边均小于 256 用 BICUBIC，其余 LANCZOS；输出 RGB 256×256 PNG。不 crop/pad/EXIF 自动旋转/ICC 变换/线性化/增强/归一化。正式 `data.py` 保持工作图读取接口。
+
+独立入口 `tools/prepare_pad_ufes20.py` 使用 seed=2026，固定 train/val/test 患者数 961/206/206；基于多诊断患者统计向量优化 70/15/15 组成，所有 lesion 按 `(patient_id, lesion_id)` 计数。源数据只读，输出目录禁止覆盖，完整验收后发布。输出清单路径相对 manifest，可整体迁移。
+
+数据准备不启动训练；batch/lr/epoch、augmentation 和研究质量门槛未在此选择。
 
 ## 证据边界
 
