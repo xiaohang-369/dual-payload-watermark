@@ -13,20 +13,22 @@ from dual_payload.transforms import BlockDCT, rgb_to_ycbcr
 
 
 def v2_system():
-    return DualPayloadSystem(deepcopy(DEFAULT_CONFIG["model"]))
+    config = deepcopy(DEFAULT_CONFIG["model"])
+    config["message_bits"] = 256
+    return DualPayloadSystem(config)
 
 
 def test_missing_system_architecture_version_is_not_treated_as_v2():
-    with pytest.raises(ValueError, match="architecture_version=v2"):
+    with pytest.raises(ValueError, match="architecture_version=v3"):
         DualPayloadSystem({})
 
 
 def test_v2_construction_and_frozen_initialization():
     model = v2_system()
-    assert model.architecture_version == "v2"
+    assert model.architecture_version == "v3"
     assert not bool(torch.count_nonzero(model.color_encoder.head.weight))
     assert not bool(torch.count_nonzero(model.color_encoder.head.bias))
-    assert 0 < float(model.watermark_encoder.head.weight.std()) < 5e-4
+    assert 0 < float(model.watermark_encoder.head.weight.detach().std()) < 5e-4
     assert not bool(torch.count_nonzero(model.watermark_encoder.head.bias))
     assert all(layer.eps == 1e-5 for layer in model.modules()
                if isinstance(layer, (BiasFreeLayerNorm, WithBiasLayerNorm)))
@@ -45,10 +47,10 @@ def test_v2_state_dict_strict_roundtrip():
 def test_complete_system_forward_uses_fixed_v2_interface():
     model = v2_system()
     rgb = torch.rand(1, 3, 256, 256)
-    message = torch.randint(0, 2, (1, 64)).float()
+    message = torch.randint(0, 2, (1, 256)).float()
     with torch.no_grad():
         output = model(rgb, message)
-    assert output["logits"].shape == (1, 64)
+    assert output["logits"].shape == (1, 256)
     assert output["rgb_hat"].shape == rgb.shape
     assert output["s"].shape == (1, 1, 256, 256)
     assert torch.equal(output["s"], output["y"])
@@ -63,7 +65,7 @@ def test_both_decoders_receive_same_256_image_and_keep_p0_constraint():
     handles = [decoder.register_forward_pre_hook(lambda module, args: inputs.append(args[0]))
                for decoder in (model.color_decoder, model.watermark_decoder)]
     with torch.no_grad():
-        output = model(torch.rand(1, 3, 256, 256), torch.zeros(1, 64))
+        output = model(torch.rand(1, 3, 256, 256), torch.zeros(1, 256))
     assert inputs[0] is output["attacked_image"] and inputs[1] is inputs[0]
     dct = BlockDCT()
     torch.testing.assert_close(dct.project(output["y_hat"], "0"),
@@ -92,8 +94,8 @@ def test_ec_zero_head_delays_trunk_gradient_by_one_step():
 
 
 def test_ew_host_condition_is_detached_but_carrier_main_path_is_not():
-    encoder = WatermarkEncoder()
-    message = torch.randint(0, 2, (1, 64)).float()
+    encoder = WatermarkEncoder(message_bits=256)
+    message = torch.randint(0, 2, (1, 256)).float()
     host = torch.rand(1, 1, 256, 256, requires_grad=True)
     encoder(host, message)["candidate"].square().mean().backward()
     assert host.grad is None or not bool(torch.count_nonzero(host.grad))
@@ -104,22 +106,22 @@ def test_ew_host_condition_is_detached_but_carrier_main_path_is_not():
 
 
 def test_v2_encoder_and_decoder_intermediate_shapes_for_batch_two():
-    encoder, decoder = WatermarkEncoder(), WatermarkDecoder()
+    encoder, decoder = WatermarkEncoder(message_bits=256), WatermarkDecoder(message_bits=256)
     host = torch.rand(2, 1, 256, 256)
-    message = torch.randint(0, 2, (2, 64)).float()
+    message = torch.randint(0, 2, (2, 256)).float()
     with torch.no_grad():
         water = encoder(host, message)
         assert water["coefficients"].shape == (2, 9, 32, 32)
         assert water["dct_residual"].shape == (2, 64, 32, 32)
         assert water["candidate"].shape == (2, 1, 256, 256)
         assert water["residual"].shape == (2, 1, 256, 256)
-        assert decoder(water["carrier"]).shape == (2, 64)
+        assert decoder(water["carrier"]).shape == (2, 256)
 
 
 def test_full_loss_backward_reaches_all_four_networks():
     torch.manual_seed(31)
     model = v2_system()
-    message = torch.randint(0, 2, (1, 64)).float()
+    message = torch.randint(0, 2, (1, 256)).float()
     losses = CleanLoss(DEFAULT_CONFIG["loss"])(
         model(torch.rand(1, 3, 256, 256), message), message
     )
@@ -132,25 +134,25 @@ def test_full_loss_backward_reaches_all_four_networks():
 
 
 def test_decoder_has_raw_logits_not_sigmoid():
-    decoder = WatermarkDecoder()
+    decoder = WatermarkDecoder(message_bits=256)
     with torch.no_grad():
         decoder.head.weight.zero_()
         decoder.head.bias.fill_(-3)
-    assert torch.equal(decoder(torch.rand(1, 1, 256, 256)), torch.full((1, 64), -3.0))
+    assert torch.equal(decoder(torch.rand(1, 1, 256, 256)), torch.full((1, 256), -3.0))
 
 
-@pytest.mark.parametrize("message", [torch.zeros(1, 63), torch.full((1, 64), 0.5)])
+@pytest.mark.parametrize("message", [torch.zeros(1, 255), torch.full((1, 256), 0.5)])
 def test_bad_message_rejected(message):
     with pytest.raises(ValueError):
-        WatermarkEncoder()(torch.rand(1, 1, 256, 256), message)
+        WatermarkEncoder(message_bits=256)(torch.rand(1, 1, 256, 256), message)
 
 
 @pytest.mark.parametrize("shape", [(1, 1, 32, 32), (1, 1, 256, 248)])
 def test_full_ew_and_dw_reject_non_256_inputs(shape):
     with pytest.raises(ValueError, match="256"):
-        WatermarkEncoder()(torch.rand(shape), torch.zeros(1, 64))
+        WatermarkEncoder(message_bits=256)(torch.rand(shape), torch.zeros(1, 256))
     with pytest.raises(ValueError, match="256"):
-        WatermarkDecoder()(torch.rand(shape))
+        WatermarkDecoder(message_bits=256)(torch.rand(shape))
 
 
 def test_dc_returns_existing_interface_keys():

@@ -1,0 +1,49 @@
+{
+  "seed": 2026,
+  "device": "auto",
+  "model": {
+    "architecture_version": "v3",
+    "message_bits": 256,
+    "delta_c": 0.00784313725490196,
+    "delta_w": 0.00784313725490196,
+    "eps": 1e-08
+  },
+  "channel": {
+    "quantization_mode": "none",
+    "clamp_enabled": false,
+    "attack_mode": "identity"
+  },
+  "loss": {
+    "rgb": 1.0,
+    "chroma": 0.0,
+    "luma": 0.0,
+    "message": 1.0,
+    "carrier": 1.0,
+    "range": 0.1
+  },
+  "data": {
+    "train_manifest": null,
+    "val_manifest": null,
+    "image_size": 256,
+    "batch_size": 2,
+    "num_workers": 0
+  },
+  "train": {
+    "stage": "protocol_eval",
+    "key_transform": true,
+    "epochs": 20,
+    "lr": 0.0001,
+    "weight_decay": 0.0,
+    "grad_clip": 1.0,
+    "max_steps": null,
+    "log_every": 10,
+    "output_dir": null
+  },
+  "protocol": {
+    "candidate_count": 15,
+    "beta_c": null,
+    "beta_m": null,
+    "min_moved_c": null,
+    "min_moved_m": null
+  }
+}

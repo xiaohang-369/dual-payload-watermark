@@ -31,3 +31,7 @@ analysis_results/
 
 # macOS
 .DS_Store
+.agents/
+.specify/
+specs/
+医疗图像双载荷分权限可逆灰度共享方案_Protocol_v1.md

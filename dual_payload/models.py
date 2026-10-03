@@ -1,9 +1,10 @@
-"""Network V2: four fixed-interface Restormer-based payload networks."""
+"""Medical V3 (v2clean backbone): four fixed-interface Restormer-based payload networks."""
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .config import message_bits as validate_message_bits
 from .transforms import BlockDCT, rms_cap, ycbcr_to_rgb
 
 
@@ -213,12 +214,14 @@ class ColorEncoder(nn.Module):
 
 
 class WatermarkEncoder(nn.Module):
-    def __init__(self, delta_w: float = 2 / 255, eps: float = 1e-8) -> None:
+    def __init__(self, delta_w: float = 2 / 255, eps: float = 1e-8,
+                 message_bits: int = 256) -> None:
         super().__init__()
         self.dct = BlockDCT()
         self.delta_w, self.eps = delta_w, eps
+        self.message_bits = validate_message_bits({"message_bits": message_bits})
         self.message_branch = nn.Sequential(
-            nn.Linear(64, 256), nn.GELU(), nn.Linear(256, 1024)
+            nn.Linear(self.message_bits, 256), nn.GELU(), nn.Linear(256, 1024)
         )
         self.message_stem = nn.Sequential(_conv3(1, 32), nn.GELU(), _conv3(32, 64))
         self.image_stem = nn.Sequential(_conv3(64, 64), nn.GELU(), _conv3(64, 64))
@@ -236,8 +239,8 @@ class WatermarkEncoder(nn.Module):
     def forward(self, s: Tensor, message: Tensor) -> dict[str, Tensor]:
         if s.ndim != 4 or s.shape[1:] != (1, 256, 256):
             raise ValueError("Ew requires S with shape B x 1 x 256 x 256")
-        if message.shape != (s.shape[0], 64):
-            raise ValueError("Message must have shape B x 64")
+        if message.shape != (s.shape[0], self.message_bits):
+            raise ValueError(f"Message must have shape B x {self.message_bits}")
         if not bool(((message == 0) | (message == 1)).all()):
             raise ValueError("Messages must contain only 0 and 1")
         signed_message = 2 * message.to(dtype=s.dtype) - 1
@@ -274,7 +277,12 @@ class ColorDecoder(nn.Module):
     def forward(self, x: Tensor) -> dict[str, Tensor]:
         if x.ndim != 4 or x.shape[1] != 1:
             raise ValueError("Dc expects a B x 1 x H x W tensor")
-        coefficients = self.dct(x)
+        return self.forward_from_coefficients(self.dct(x))
+
+    def forward_from_coefficients(self, coefficients: Tensor) -> dict[str, Tensor]:
+        """Continue after DCT and optional color inverse permutation."""
+        if coefficients.ndim != 4 or coefficients.shape[1] != 64:
+            raise ValueError("Dc requires 64 DCT channels")
         z0 = self.dct.inverse(coefficients * self.dct.mask_0)
         zc = self.dct.inverse(coefficients * self.dct.mask_c)
         z = z0 + zc
@@ -289,20 +297,27 @@ class ColorDecoder(nn.Module):
 
 
 class WatermarkDecoder(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, message_bits: int = 256) -> None:
         super().__init__()
+        self.message_bits = validate_message_bits({"message_bits": message_bits})
         self.dct = BlockDCT()
         self.stem = nn.Sequential(_conv1(9, 32), nn.GELU(), _conv3(32, 64))
         self.body = _blocks(64, 4, 4, False)
         self.pattern_head = nn.Sequential(_conv3(64, 32), nn.GELU(), _conv3(32, 1))
         self.message_mlp = nn.Sequential(nn.Linear(1024, 256), nn.GELU())
-        self.head = nn.Linear(256, 64)
+        self.head = nn.Linear(256, self.message_bits)
         _initialize_v2(self)
 
     def forward(self, x: Tensor) -> Tensor:
         if x.ndim != 4 or x.shape[1:] != (1, 256, 256):
             raise ValueError("Dw requires X with shape B x 1 x 256 x 256")
-        initial = self.stem(self.dct.watermark(x))
+        return self.forward_from_coefficients(self.dct.watermark(x))
+
+    def forward_from_coefficients(self, coefficients: Tensor) -> Tensor:
+        """Continue after extraction and optional patient inverse permutation."""
+        if coefficients.ndim != 4 or coefficients.shape[1:] != (9, 32, 32):
+            raise ValueError("Dw requires B x 9 x 32 x 32 coefficients")
+        initial = self.stem(coefficients)
         features = initial + self.body(initial)
         pattern = self.pattern_head(features)
         hidden = self.message_mlp(pattern.flatten(start_dim=1))

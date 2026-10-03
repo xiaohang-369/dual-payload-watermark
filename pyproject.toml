@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dual-payload-grayscale"
 version = "0.1.0"
-description = "Four-network system for color and 64-bit watermark payloads"
+description = "Medical V3 four-network system with fixed 256-bit payloads and Protocol v1"
 requires-python = ">=3.11"
-dependencies = ["torch>=2.6", "numpy>=1.26", "Pillow>=10"]
+dependencies = ["torch>=2.6", "numpy>=1.26", "Pillow>=10", "cryptography>=43"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

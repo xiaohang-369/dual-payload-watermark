@@ -1,56 +1,10 @@
-# Network V2 Handoff
+# Medical V3 continuation
 
-## Current Git state
-
-- Active branch: `feature/network-v2-clean`
-- `main` and `baseline-v1` preserve the Network V1 history.
-- Network V2 requires `architecture_version=v2` and refuses Network V1 checkpoints.
-
-## Network V2 core
-
-- Input: `256×256` RGB images
-- Payload: 64-bit binary message
-- Recovery: blind color and message recovery from the received grayscale carrier
-- Modules: Color Encoder (`Ec`), Watermark Encoder (`Ew`), Color Decoder (`Dc`), and Watermark Decoder (`Dw`)
-- Architecture version: `v2`
-
-
-## Confirmed baseline parameters
-
-The formal single-H100 configuration is [configs/v2_clean_baseline_h100.json](configs/v2_clean_baseline_h100.json). Key values are:
-
-- Seed: `2026`
-- Image size: `256`
-- Message length: 64 bits
-- `delta_c=2/255`, `delta_w=2/255`, `eps=1e-8`
-- Adam, learning rate `1e-4`, weight decay `0`, gradient clipping `1`
-- Loss weights: RGB `1.0`, message `1.0`, carrier `1.0`, range `0.1`; chroma and luma `0.0`
-- Float clean channel: no quantization, identity, no clamp
-- Full DIV2K: 800 train images and 100 validation images
-- Logical/effective batch size: `16`; micro-batch size: `16`
-- Gradient accumulation steps: `1`; DataLoader workers: `8`
-- Budget: at most `50,000` optimizer steps (`epochs=1000`, 50 steps per complete epoch)
-- Messages: fresh random 64-bit messages during training and deterministic messages during validation
-- Runtime precision: FP32; BF16, AMP, and TF32 are disabled
-- Output: `/data/zwc/zyh/experiments/dual-payload-watermark/network-v2/v2_clean_div2k_full_fp32_b16_ga1_seed2026_run01`
-
-## Batch semantics
-
-- `batch_size` is the logical/effective batch size and the DataLoader batch size.
-- `gradient_accumulation_steps` splits one logical batch into micro-batches.
-- Gradients do not accumulate across DataLoader batches.
-- Each DataLoader iteration performs one `optimizer.step()`.
-
-## Server deployment principles
-
-- Clone and use `feature/network-v2-clean`, not the default historical branch.
-- Use one H100 selected through `CUDA_VISIBLE_DEVICES`; the current trainer is single-GPU.
-- Train data: `/data/zwc/Data/DIV2K/DIV2K_train_HR`.
-- Validation data: `/data/zwc/Data/DIV2K/DIV2K_valid_HR`.
-- The configured output directory must be new or empty for a fresh run.
-- Do not inherit local Windows absolute paths.
-- Start with `python train.py --config configs/v2_clean_baseline_h100.json --gradient-accumulation-steps 1`.
-
-## Cleanup status
-
-The current V2 branch has removed the old V1 configs, Network1 documentation, `joint_10x20_v1` assets, and legacy analysis scripts.
+1. 完整阅读 `医疗图像双载荷分权限可逆灰度共享方案_Protocol_v1.md`。它是算法与协议唯一权威；代码/README/旧 specs 不得覆盖它。
+2. 当前主线固定 256-bit，无 legacy 配置、部分加载或 64-bit 新运行入口。`architecture_version=v3` 是工程 schema，四网络主体仍为 v2clean。
+3. 当前入口见 README。`specs/001-message-bits-stages` 与 `specs/002-medical-protocol-v1` 保留历史记录，旧训练流程已被当前决定取代。
+4. 协议入口 `ProtocolV1` 从完整 V3 检查点精确文件字节绑定 ModelID；先验签，独立 KC/KM 恢复。不要改动冻结的候选生成、编号、选择、字节格式和签名摘要规则。
+5. 正式训练只有 `joint_256`，四网络从头初始化、全部进入同一 optimizer，一次总损失 backward；不加载已有权重，不开启密钥排列或密码协议。`--init-from` 已删除。四项核心 loss（rgb/message/carrier/range）权重必须有限且 >0。训练后冻结模型，只在 `protocol_eval` 启用完整协议。
+6. 本轮只做合成 CPU 验证，没有连接服务器或启动真实数据训练。测试与真实解码质量、机密性、医学质量的证据不可混淆。
+7. active configs 只有 `medical_joint_256.json` 和 `medical_protocol_eval.json`。beta/min_moved 保留 null，协议评估未填写就拒绝。数据仍只收已经处理好的 RGB 256×256 工作图，不增加预处理。
+8. 下一步由用户确定 PAD-UFES-20 patient-level split、工作图处理、augmentation、正式训练超参数、beta/min_moved 和医学质量门槛。当前不迁移旧权重，不实现导入工具；精确 resume 与 scheduler 均未实现，本次不扩展。正式训练和保护效果实验尚未开展。

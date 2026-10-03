@@ -1,11 +1,12 @@
 {
   "seed": 2026,
-  "device": "cuda",
+  "device": "auto",
   "model": {
-    "architecture_version": "v2",
+    "architecture_version": "v3",
+    "message_bits": 256,
     "delta_c": 0.00784313725490196,
     "delta_w": 0.00784313725490196,
-    "eps": 1e-8
+    "eps": 1e-08
   },
   "channel": {
     "quantization_mode": "none",
@@ -21,20 +22,28 @@
     "range": 0.1
   },
   "data": {
-    "train_dir": "/data/zwc/Data/DIV2K/DIV2K_train_HR",
-    "val_dir": "/data/zwc/Data/DIV2K/DIV2K_valid_HR",
+    "train_manifest": null,
+    "val_manifest": null,
     "image_size": 256,
-    "batch_size": 16,
-    "num_workers": 8
+    "batch_size": 2,
+    "num_workers": 0
   },
   "train": {
-    "epochs": 1000,
+    "stage": "joint_256",
+    "key_transform": false,
+    "epochs": 20,
     "lr": 0.0001,
     "weight_decay": 0.0,
     "grad_clip": 1.0,
-    "max_steps": 50000,
+    "max_steps": null,
     "log_every": 10,
-    "output_dir": "/data/zwc/zyh/experiments/dual-payload-watermark/network-v2/v2_clean_div2k_full_fp32_b16_ga1_seed2026_run01"
+    "output_dir": null
   },
-  "experiment": null
+  "protocol": {
+    "candidate_count": 15,
+    "beta_c": null,
+    "beta_m": null,
+    "min_moved_c": null,
+    "min_moved_m": null
+  }
 }

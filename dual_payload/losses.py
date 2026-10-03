@@ -22,5 +22,6 @@ class CleanLoss(nn.Module):
             "carrier": F.mse_loss(x, output["y"]),
             "range": (F.relu(-x).square() + F.relu(x - 1).square()).mean(),
         }
-        terms["total"] = sum(self.weights.get(key, 0.0) * value for key, value in terms.items())
+        terms["total"] = sum(self.weights.get(key, 0.0) * value for key, value in terms.items()
+                             if self.weights.get(key, 0.0) != 0)
         return terms
